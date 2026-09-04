@@ -179,6 +179,21 @@ def list_transactions(
         ]
 
 
+@mcp.tool()
+def check_for_anomalies(company_id: int) -> list[dict]:
+    """Flag suspicious expenses: probable duplicates, unusually large
+    amounts for their category, and requests left waiting for approval.
+
+    These are statistical checks over the ledger, not opinions — use them
+    as leads to investigate, and read the underlying transactions before
+    drawing conclusions about anyone.
+    """
+    from .ai.anomalies import detect_anomalies
+
+    with session_scope() as session:
+        return [finding.as_dict() for finding in detect_anomalies(session, company_id)]
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     from .db import create_all, init_engine

@@ -46,6 +46,14 @@ def test_actor_defaults_to_the_least_privileged_role():
     assert Actor(name="X").role is Role.REGULAR_USER
 
 
+def test_timestamps_are_naive_so_they_compare_across_databases():
+    """MySQL and SQLite both return naive datetimes; mixing naive and
+    aware values raises TypeError on comparison."""
+    from account_manager.models import utcnow
+
+    assert utcnow().tzinfo is None
+
+
 def test_transaction_serialises_enum_values_not_names():
     txn = Transaction(
         company_id=1,

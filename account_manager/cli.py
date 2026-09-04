@@ -16,6 +16,7 @@ import logging
 import sys
 
 from . import services
+from .ai.base import AIError
 from .db import create_all, init_engine, session_scope
 from .errors import AccountManagerError
 from .models import Actor, Role, TransactionStatus
@@ -119,6 +120,68 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ai_parse(args: argparse.Namespace) -> int:
+    """Log a transaction written as an ordinary sentence."""
+    from .ai import get_provider
+    from .ai.extract import parse_transaction_text
+
+    parsed = parse_transaction_text(args.text, get_provider())
+    print(
+        f"Understood: {parsed.type} {parsed.amount} "
+        f"[{parsed.category}] {parsed.description}"
+    )
+    if args.dry_run:
+        print("(dry run — nothing was recorded)")
+        return 0
+
+    actor = Actor(name=args.by, role=Role(args.role))
+    with session_scope() as session:
+        if parsed.type == "income":
+            txn = services.add_income(
+                session,
+                args.company,
+                actor,
+                parsed.amount,
+                description=parsed.description,
+                category=parsed.category,
+            )
+        else:
+            txn = services.submit_expense(
+                session,
+                args.company,
+                actor,
+                parsed.amount,
+                description=parsed.description,
+                category=parsed.category,
+            )
+        _print_transaction(txn.as_dict())
+    return 0
+
+
+def _cmd_ai_summary(args: argparse.Namespace) -> int:
+    from .ai import get_provider
+    from .ai.insights import summarise
+
+    with session_scope() as session:
+        print(summarise(session, args.company, get_provider()))
+    return 0
+
+
+def _cmd_ai_check(args: argparse.Namespace) -> int:
+    """Statistical checks — works with no AI provider configured."""
+    from .ai.anomalies import detect_anomalies
+
+    with session_scope() as session:
+        findings = detect_anomalies(session, args.company)
+
+    if not findings:
+        print("No anomalies found.")
+        return 0
+    for finding in findings:
+        print(f"[{finding.severity:<6}] {finding.message}")
+    return 0
+
+
 def _cmd_transactions(args: argparse.Namespace) -> int:
     status = TransactionStatus(args.status) if args.status else None
     with session_scope() as session:
@@ -201,6 +264,33 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--company", type=int, required=True)
     report.set_defaults(func=_cmd_report)
 
+    ai = sub.add_parser("ai", help="Optional AI-assisted features")
+    ai_sub = ai.add_subparsers(dest="ai_command", required=True)
+
+    ai_parse = ai_sub.add_parser(
+        "log", help="Log a transaction written as a plain sentence"
+    )
+    ai_parse.add_argument("text", help='e.g. "paid 45.50 for an uber to the airport"')
+    ai_parse.add_argument("--company", type=int, required=True)
+    ai_parse.add_argument("--by", required=True)
+    ai_parse.add_argument(
+        "--role", default=Role.REGULAR_USER.value, choices=[r.value for r in Role]
+    )
+    ai_parse.add_argument(
+        "--dry-run", action="store_true", help="Show what was understood, record nothing"
+    )
+    ai_parse.set_defaults(func=_cmd_ai_parse)
+
+    ai_summary = ai_sub.add_parser("summary", help="Plain-English financial summary")
+    ai_summary.add_argument("--company", type=int, required=True)
+    ai_summary.set_defaults(func=_cmd_ai_summary)
+
+    ai_check = ai_sub.add_parser(
+        "check", help="Flag duplicates and unusual expenses (no AI provider needed)"
+    )
+    ai_check.add_argument("--company", type=int, required=True)
+    ai_check.set_defaults(func=_cmd_ai_check)
+
     transactions = sub.add_parser("transactions", help="List transactions")
     transactions.add_argument("--company", type=int, required=True)
     transactions.add_argument(
@@ -219,6 +309,9 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.func(args))
     except AccountManagerError as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except AIError as exc:
+        print(f"AI error: {exc}", file=sys.stderr)
         return 1
 
 

@@ -20,6 +20,7 @@ EXPECTED_TOOLS = {
     "approve_expense",
     "reject_expense",
     "list_transactions",
+    "check_for_anomalies",
 }
 
 
@@ -148,6 +149,26 @@ async def test_unknown_role_is_rejected(database):
             role="wizard",
             amount="10",
         )
+
+
+async def test_anomaly_check_runs_without_any_ai_provider(database):
+    """The anomaly tool is statistical, so it must work with no API key."""
+    company_id = (await call("create_company", name="Acme", owner_name="Ahmed"))[
+        "company_id"
+    ]
+    await call("add_income", company_id=company_id, actor_name="Ahmed", amount="1000")
+    for _ in range(2):
+        await call(
+            "submit_expense",
+            company_id=company_id,
+            actor_name="Raza",
+            role="admin",
+            amount="40",
+            description="Same lunch",
+        )
+
+    findings = await call("check_for_anomalies", company_id=company_id)
+    assert any(f["kind"] == "possible_duplicate" for f in findings)
 
 
 async def test_list_transactions_filters_by_status(database):

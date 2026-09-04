@@ -14,3 +14,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+
+# Build artifacts
+build/
+dist/

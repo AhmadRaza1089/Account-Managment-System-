@@ -76,7 +76,9 @@ def upgrade() -> None:
 
 def _migrate_legacy_data(bind, existing: set[str]) -> None:
     """Copy pre-ledger companies and running totals into the new tables."""
-    now = datetime.now(timezone.utc)
+    # Naive UTC, matching how the application stores timestamps (see
+    # account_manager.models.utcnow).
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     companies = bind.execute(
         sa.text(f"SELECT id, name, owner_name FROM {LEGACY_COMPANY}")  # noqa: S608

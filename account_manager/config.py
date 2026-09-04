@@ -38,10 +38,23 @@ class Settings:
     database_url: str
     echo_sql: bool = False
 
+    # Optional AI features. With no provider set, everything except the
+    # AI commands still works, including anomaly detection.
+    ai_provider: str = ""
+    ai_model: str = ""
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    ollama_host: str = ""
+
     @classmethod
     def from_env(cls) -> "Settings":
         url = os.environ.get("DATABASE_URL") or _legacy_mysql_url() or DEFAULT_DATABASE_URL
         return cls(
             database_url=url,
             echo_sql=os.environ.get("ECHO_SQL", "").lower() in {"1", "true", "yes"},
+            ai_provider=os.environ.get("AI_PROVIDER", ""),
+            ai_model=os.environ.get("AI_MODEL", ""),
+            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
+            ollama_host=os.environ.get("OLLAMA_HOST", ""),
         )

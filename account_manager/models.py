@@ -18,7 +18,16 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    """The current UTC time, without a timezone attached.
+
+    MySQL's DATETIME and SQLite both drop timezone information, so a value
+    read back from either is naive. Storing naive UTC everywhere means
+    comparing a stored timestamp against a fresh one behaves the same on
+    every supported database, instead of working on one and raising
+    "can't compare offset-naive and offset-aware datetimes" on another.
+    Everything in this project is UTC.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _enum_column(enum_cls: type[enum.Enum]) -> Enum:
@@ -142,9 +151,10 @@ class Transaction(Base):
             "category": self.category,
             "description": self.description,
             "created_by": self.created_by,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            # Stored naive but always UTC; the Z makes that explicit to callers.
+            "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
             "decided_by": self.decided_by,
-            "decided_at": self.decided_at.isoformat() if self.decided_at else None,
+            "decided_at": f"{self.decided_at.isoformat()}Z" if self.decided_at else None,
             "decision_note": self.decision_note,
         }
 
