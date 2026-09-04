@@ -9,3 +9,8 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Local SQLite databases (the default DATABASE_URL creates one of these)
+*.db
+*.sqlite
+*.sqlite3

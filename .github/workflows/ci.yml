@@ -9,12 +9,18 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
@@ -27,3 +33,33 @@ jobs:
 
       - name: Run tests
         run: pytest -v
+
+  package:
+    # The project is meant to be installed by strangers, so prove that
+    # installing it and running it actually works from a clean checkout.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install the package
+        run: pip install .
+
+      - name: Migrate a fresh database
+        run: alembic upgrade head
+        env:
+          DATABASE_URL: sqlite:///ci-check.db
+
+      - name: Exercise the CLI against it
+        env:
+          DATABASE_URL: sqlite:///ci-check.db
+        run: |
+          account-manager company create --name "CI Co" --owner CI
+          account-manager income add --company 1 --amount 1000 --by CI
+          account-manager expense submit --company 1 --amount 100 --by Staff --role regular_user
+          account-manager expense approve --id 2 --by CI
+          account-manager report --company 1
