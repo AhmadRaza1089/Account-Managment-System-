@@ -225,8 +225,36 @@ def submit_expense(
     return txn
 
 
-def _load_pending_expense(session: Session, transaction_id: int) -> Transaction:
-    txn = session.get(Transaction, transaction_id)
+def _company_id_for(session: Session, transaction_id: int) -> int:
+    company_id = session.execute(
+        select(Transaction.company_id).where(Transaction.id == transaction_id)
+    ).scalar_one_or_none()
+    if company_id is None:
+        raise NotFound(f"No transaction with id {transaction_id}.")
+    return company_id
+
+
+def _claim_pending_expense(session: Session, transaction_id: int) -> Transaction:
+    """Re-read an expense under lock and check it is still pending.
+
+    Both parts matter. Without the re-read, two admins approving at the same
+    moment both see 'pending' and both apply the expense, spending the money
+    twice; populate_existing forces the values to come from the database
+    rather than from whatever this session already had in memory.
+
+    The re-read must also be a *locking* read. MySQL defaults to REPEATABLE
+    READ, where a plain SELECT returns the snapshot taken when the
+    transaction began — so it would still report 'pending' even after the
+    other approver committed. A locking read always sees the latest
+    committed row, on MySQL and PostgreSQL alike.
+    """
+    txn = session.execute(
+        select(Transaction)
+        .where(Transaction.id == transaction_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+
     if txn is None:
         raise NotFound(f"No transaction with id {transaction_id}.")
     if txn.type is not TransactionType.EXPENSE:
@@ -238,43 +266,52 @@ def _load_pending_expense(session: Session, transaction_id: int) -> Transaction:
     return txn
 
 
-def approve_expense(
-    session: Session, transaction_id: int, actor: Actor, *, note: str | None = None
+def _decide_expense(
+    session: Session,
+    transaction_id: int,
+    actor: Actor,
+    status: TransactionStatus,
+    note: str | None,
 ) -> Transaction:
-    """Approve a pending expense. Admins only."""
+    """Approve or reject, whichever status is passed in.
+
+    Locks the company first — the same order every other money operation
+    uses — so concurrent decisions queue up instead of deadlocking.
+    """
+    verb = "approve" if status is TransactionStatus.APPROVED else "reject"
     if not actor.is_admin:
         raise PermissionDenied(
-            f"{actor.name} has role '{actor.role.value}' and cannot approve expenses."
+            f"{actor.name} has role '{actor.role.value}' and cannot {verb} expenses."
         )
-    txn = _load_pending_expense(session, transaction_id)
-    get_company(session, txn.company_id, lock=True)
 
-    txn.status = TransactionStatus.APPROVED
+    get_company(session, _company_id_for(session, transaction_id), lock=True)
+    txn = _claim_pending_expense(session, transaction_id)
+
+    txn.status = status
     txn.decided_by = actor.name
     txn.decided_at = utcnow()
     txn.decision_note = note
     session.flush()
-    logger.info("Transaction %s approved by %s", transaction_id, actor.name)
+    logger.info("Transaction %s %sd by %s", transaction_id, verb, actor.name)
     return txn
+
+
+def approve_expense(
+    session: Session, transaction_id: int, actor: Actor, *, note: str | None = None
+) -> Transaction:
+    """Approve a pending expense. Admins only."""
+    return _decide_expense(
+        session, transaction_id, actor, TransactionStatus.APPROVED, note
+    )
 
 
 def reject_expense(
     session: Session, transaction_id: int, actor: Actor, *, note: str | None = None
 ) -> Transaction:
     """Reject a pending expense, releasing the funds it was holding."""
-    if not actor.is_admin:
-        raise PermissionDenied(
-            f"{actor.name} has role '{actor.role.value}' and cannot reject expenses."
-        )
-    txn = _load_pending_expense(session, transaction_id)
-
-    txn.status = TransactionStatus.REJECTED
-    txn.decided_by = actor.name
-    txn.decided_at = utcnow()
-    txn.decision_note = note
-    session.flush()
-    logger.info("Transaction %s rejected by %s", transaction_id, actor.name)
-    return txn
+    return _decide_expense(
+        session, transaction_id, actor, TransactionStatus.REJECTED, note
+    )
 
 
 # --------------------------------------------------------------------------

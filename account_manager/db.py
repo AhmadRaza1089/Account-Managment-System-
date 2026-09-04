@@ -9,7 +9,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, MetaData, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import Settings
@@ -31,6 +31,15 @@ def _engine_kwargs(url: str, echo: bool) -> dict:
         # hand out sockets the database has already dropped.
         kwargs["pool_pre_ping"] = True
         kwargs["pool_recycle"] = 3600
+
+    if url.startswith("mysql") or url.startswith("mariadb"):
+        # MySQL defaults to REPEATABLE READ, where a plain SELECT keeps
+        # returning the snapshot taken when the transaction began. A balance
+        # read taken after acquiring the company lock would then still show
+        # the pre-lock figures, and two writers could each spend the same
+        # money. PostgreSQL already defaults to READ COMMITTED and SQLite
+        # serialises writers, so this makes all three behave alike.
+        kwargs["isolation_level"] = "READ COMMITTED"
     return kwargs
 
 
@@ -87,3 +96,15 @@ def create_all() -> None:
     upgrades should use the Alembic migrations instead (`alembic upgrade head`).
     """
     Base.metadata.create_all(get_engine())
+
+
+def drop_all() -> None:
+    """Drop every table in the database, including ones the models don't
+    define (such as Alembic's version table).
+
+    Only used to reset a scratch database between tests.
+    """
+    engine = get_engine()
+    metadata = MetaData()
+    metadata.reflect(bind=engine)
+    metadata.drop_all(bind=engine)

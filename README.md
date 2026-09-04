@@ -69,6 +69,26 @@ alembic upgrade head
 Run that after every upgrade too — it's how schema changes reach an
 existing install without losing data.
 
+## Backing up
+
+You host this, so the data is yours to protect. Back up **before every
+upgrade**, since migrations change the schema in place.
+
+```bash
+# SQLite — .backup is safe to run while the app is in use, unlike copying the file
+sqlite3 account_manager.db ".backup 'backup-$(date +%F).db'"
+
+# MySQL / MariaDB
+mysqldump --single-transaction account > "backup-$(date +%F).sql"
+
+# PostgreSQL
+pg_dump account > "backup-$(date +%F).sql"
+```
+
+Restoring is the reverse: point `DATABASE_URL` at a fresh database, load the
+dump, and run `alembic upgrade head`. Test a restore once — an untested
+backup isn't a backup.
+
 ## Commands
 
 ```

@@ -8,6 +8,7 @@ on:
 
 jobs:
   test:
+    name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -31,19 +32,72 @@ jobs:
       - name: Type check
         run: mypy account_manager
 
-      - name: Run tests
+      - name: Run tests (SQLite)
+        run: pytest -v
+
+  # The row locking that stops two people spending the same money is a
+  # no-op on SQLite, so it only gets exercised here.
+  test-databases:
+    name: test (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: postgres
+            url: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/account_test
+            extra: "psycopg[binary]"
+          - database: mysql
+            url: mysql+mysqlconnector://root:mysql@127.0.0.1:3306/account_test
+            extra: mysql-connector-python
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: account_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 20
+
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+          MYSQL_DATABASE: account_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pmysql"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt "${{ matrix.extra }}"
+
+      - name: Run tests against ${{ matrix.database }}
+        env:
+          TEST_DATABASE_URL: ${{ matrix.url }}
         run: pytest -v
 
   package:
     # The project is meant to be installed by strangers, so prove that
-    # installing it and running it actually works from a clean checkout.
+    # installing it and running it works from a clean checkout.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
 
       - name: Install the package
@@ -63,3 +117,19 @@ jobs:
           account-manager expense submit --company 1 --amount 100 --by Staff --role regular_user
           account-manager expense approve --id 2 --by CI
           account-manager report --company 1
+          account-manager ai check --company 1
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t account-manager:ci .
+
+      - name: Run the CLI inside it
+        run: |
+          docker run --rm -v "$PWD/data:/data" account-manager:ci \
+            account-manager company create --name "Docker Co" --owner CI
+          docker run --rm -v "$PWD/data:/data" account-manager:ci \
+            account-manager report --company 1

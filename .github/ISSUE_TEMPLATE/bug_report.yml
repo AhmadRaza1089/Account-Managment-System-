@@ -1,0 +1,52 @@
+name: Bug report
+description: Something behaves differently than it should
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        I ran: account-manager expense approve --id 4 --by Ahmed
+        I expected: the expense to be approved
+        Instead: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: Paste the full message, if there was one. No need for backticks.
+      render: shell
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Which database?
+      options:
+        - SQLite (the default)
+        - MySQL / MariaDB
+        - PostgreSQL
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of: account-manager --version, or the git commit"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: money
+    attributes:
+      label: Does this involve incorrect balances?
+      options:
+        - label: Yes — a balance, total, or approval came out wrong
+          required: false
+    description: >
+      Ticking this gets it looked at first. Anything that reports the wrong
+      amount of money is the most serious kind of bug this project can have.

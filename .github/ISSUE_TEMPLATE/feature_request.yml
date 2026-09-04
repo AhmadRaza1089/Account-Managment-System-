@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest something the project should be able to do
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: >
+        Describe the situation rather than the solution — it often turns out
+        there's a simpler way to solve it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like it to do?
+
+  - type: checkboxes
+    id: known
+    attributes:
+      label: Already on the roadmap?
+      description: The README lists what's known to be missing.
+      options:
+        - label: I checked the "Not done yet" section of the README
+          required: false

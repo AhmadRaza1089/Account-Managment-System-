@@ -1,0 +1,54 @@
+# Publishes to PyPI when a version tag is pushed:
+#
+#     git tag v0.2.0 && git push origin v0.2.0
+#
+# One-time setup, no API token needed: create the project on PyPI, then add
+# a trusted publisher under Manage -> Publishing with
+#   owner: this repository's owner, repo: this repository,
+#   workflow: release.yml, environment: pypi
+# See https://docs.pypi.org/trusted-publishers/
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the distributions
+        run: |
+          pip install build
+          python -m build
+
+      - name: Check the metadata renders on PyPI
+        run: |
+          pip install twine
+          twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # required for trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

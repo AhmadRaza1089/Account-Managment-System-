@@ -15,7 +15,7 @@ import argparse
 import logging
 import sys
 
-from . import services
+from . import __version__, services
 from .ai.base import AIError
 from .db import create_all, init_engine, session_scope
 from .errors import AccountManagerError
@@ -199,6 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="account-manager", description="Track company income, expenses, approvals."
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init-db", help="Create the database tables").set_defaults(

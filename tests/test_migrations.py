@@ -47,18 +47,36 @@ def _alembic_config() -> Config:
 
 @pytest.fixture
 def migrated_url(tmp_path, monkeypatch):
+    """SQLite only — the legacy-schema tests below use SQLite-specific DDL."""
     url = f"sqlite:///{tmp_path / 'migrate.db'}"
     monkeypatch.setenv("DATABASE_URL", url)
     return url
 
 
-def test_migration_creates_a_working_schema_from_scratch(migrated_url):
+@pytest.fixture
+def any_database_url(tmp_path, monkeypatch):
+    """The configured test database, so migration DDL is checked for
+    portability across MySQL and PostgreSQL as well as SQLite."""
+    from tests.conftest import TEST_DATABASE_URL
+
+    if TEST_DATABASE_URL:
+        url = TEST_DATABASE_URL
+        monkeypatch.setenv("DATABASE_URL", url)
+        db.init_engine(Settings(database_url=url))
+        db.drop_all()
+    else:
+        url = f"sqlite:///{tmp_path / 'migrate.db'}"
+        monkeypatch.setenv("DATABASE_URL", url)
+    return url
+
+
+def test_migration_creates_a_working_schema_from_scratch(any_database_url):
     command.upgrade(_alembic_config(), "head")
 
-    tables = set(sa.inspect(sa.create_engine(migrated_url)).get_table_names())
+    tables = set(sa.inspect(sa.create_engine(any_database_url)).get_table_names())
     assert {"companies", "transactions"} <= tables
 
-    db.init_engine(Settings(database_url=migrated_url))
+    db.init_engine(Settings(database_url=any_database_url))
     with db.session_scope() as session:
         company = services.create_company(session, "Acme", "Ahmed")
         assert company.id is not None
