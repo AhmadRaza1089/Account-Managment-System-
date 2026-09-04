@@ -13,9 +13,6 @@ COPY account_manager ./account_manager
 # and MySQL compose profiles.
 RUN pip install --no-cache-dir ".[mysql]"
 
-COPY alembic.ini ./
-COPY migrations ./migrations
-
 # By default the data lives in a volume so it survives `docker run --rm`.
 ENV DATABASE_URL=sqlite:////data/account_manager.db
 VOLUME ["/data"]

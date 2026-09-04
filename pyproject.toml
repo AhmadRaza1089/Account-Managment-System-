@@ -37,6 +37,16 @@ account-manager = "account_manager.cli:main"
 [tool.setuptools]
 packages = ["account_manager", "account_manager.ai"]
 
+[tool.setuptools.package-data]
+# The migrations ship with the package so `account-manager init-db` works
+# for someone who installed with pip and has no source checkout.
+account_manager = [
+    "migrations/*.py",
+    "migrations/*.mako",
+    "migrations/README",
+    "migrations/versions/*.py",
+]
+
 [tool.setuptools.dynamic]
 version = { attr = "account_manager.__version__" }
 

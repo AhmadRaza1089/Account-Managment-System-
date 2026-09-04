@@ -504,7 +504,11 @@ def get_report(
         "owner": company.owner_name,
         "currency": company.currency,
         **overall.as_dict(),
-        "pending_count": len(pending),
+        # Counted over the whole ledger, not over the capped display list
+        # above, so a backlog of more than 50 isn't reported as exactly 50.
+        "pending_count": count_transactions(
+            session, company_id, status=TransactionStatus.PENDING
+        ),
         "pending_transactions": [t.as_dict() for t in pending],
     }
 

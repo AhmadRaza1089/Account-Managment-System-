@@ -103,16 +103,15 @@ jobs:
       - name: Install the package
         run: pip install .
 
-      - name: Migrate a fresh database
-        run: alembic upgrade head
+      - name: Set up the database and exercise the CLI
+        # Runs from an empty directory, proving the migrations ship in the
+        # wheel rather than only existing in the source checkout.
+        working-directory: /tmp
         env:
-          DATABASE_URL: sqlite:///ci-check.db
-
-      - name: Exercise the CLI against it
-        env:
-          DATABASE_URL: sqlite:///ci-check.db
+          DATABASE_URL: sqlite:////tmp/ci-check.db
           ACCOUNT_MANAGER_PASSWORD: ci-test-password
         run: |
+          account-manager init-db
           account-manager user create --username ci --superuser
           account-manager login --username ci
           account-manager company create --name "CI Co" --owner CI

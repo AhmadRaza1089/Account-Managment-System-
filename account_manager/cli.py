@@ -24,8 +24,9 @@ from datetime import date
 
 from . import __version__, auth, services
 from .ai.base import AIError
-from .db import create_all, init_engine, session_scope
+from .db import init_engine, session_scope
 from .errors import AccountManagerError
+from .migrate import apply_migrations
 from .models import Role, TransactionStatus
 from .security import WeakPassword
 
@@ -73,8 +74,13 @@ def _print_transaction(txn_dict: dict) -> None:
 
 
 def _cmd_init_db(_args: argparse.Namespace) -> int:
+    """Create or upgrade the schema.
+
+    Safe to run on an existing database — it applies whatever migrations
+    are outstanding, and is the step to run after every upgrade.
+    """
     init_engine()
-    create_all()
+    apply_migrations()
     with session_scope() as session:
         if auth.count_users(session) == 0:
             print(
@@ -82,7 +88,7 @@ def _cmd_init_db(_args: argparse.Namespace) -> int:
                 "  account-manager user create --username YOU --superuser"
             )
             return 0
-    print("Database ready.")
+    print("Database ready (schema up to date).")
     return 0
 
 

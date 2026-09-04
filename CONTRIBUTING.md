@@ -39,8 +39,8 @@ through `services.parse_amount`, including amounts extracted by an AI
 model.
 
 **Schema changes need a migration.** People self-host this, so we can't fix
-their database by hand — `alembic revision` and make sure `alembic upgrade
-head` works on an install that already has data.
+their database by hand — `alembic revision` and make sure
+`account-manager init-db` works on an install that already has data.
 
 **Never build an `Actor` outside `auth.py`.** It carries the authority a
 request runs with; the whole point of the auth layer is that it is the only

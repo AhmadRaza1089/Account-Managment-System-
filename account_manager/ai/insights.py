@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from ..models import TransactionType
+from ..models import TransactionStatus, TransactionType
 from ..services import get_balances, get_company, list_transactions
 from .anomalies import detect_anomalies
 from .base import AIProvider
@@ -27,9 +27,15 @@ def build_context(session: Session, company_id: int, *, limit: int = 200) -> str
     balances = get_balances(session, company_id)
     transactions = list_transactions(session, company_id, limit=limit)
 
+    # Approved only. Counting pending, rejected or reversed requests here
+    # would tell the model a company spent money it did not spend, and the
+    # summary would state that as fact.
     by_category: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     for txn in transactions:
-        if txn.type is TransactionType.EXPENSE:
+        if (
+            txn.type is TransactionType.EXPENSE
+            and txn.status is TransactionStatus.APPROVED
+        ):
             by_category[txn.category or "uncategorised"] += txn.amount
 
     lines = [
@@ -40,7 +46,7 @@ def build_context(session: Session, company_id: int, *, limit: int = 200) -> str
         f"Balance: {balances.balance}",
         f"Available to spend: {balances.available}",
         "",
-        "Spend by category:",
+        "Spend by category (approved only):",
     ]
     if by_category:
         for category, total in sorted(

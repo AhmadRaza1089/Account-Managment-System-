@@ -40,9 +40,10 @@ LEGACY_SCHEMA = (
 
 
 def _alembic_config() -> Config:
-    config = Config(str(PROJECT_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
-    return config
+    """The same configuration the application itself uses."""
+    from account_manager.migrate import alembic_config
+
+    return alembic_config()
 
 
 @pytest.fixture
@@ -155,3 +156,48 @@ def test_migrated_pending_expense_can_finally_be_approved(migrated_url):
         assert len(pending) == 1
         services.approve_expense(session, pending[0].id, Actor("A", Role.ADMIN))
         assert services.get_balances(session, 1).expense == Decimal("400.00")
+
+
+# ------------------------------------------------- init-db / apply_migrations
+
+
+def test_init_db_records_the_migration_version(any_database_url):
+    """Regression: init-db used to create tables straight from the models
+    with no version record, so the documented upgrade step then tried to
+    create those same tables again and failed."""
+    from account_manager.migrate import apply_migrations, current_revision
+
+    db.init_engine(Settings(database_url=any_database_url))
+    apply_migrations()
+
+    assert current_revision() is not None
+    # Running it a second time is a no-op, not an error.
+    apply_migrations()
+
+
+def test_init_db_recovers_a_database_that_has_no_version_record(any_database_url):
+    """A schema built by an older create_all() has the tables but no version.
+    Stamping it first means the migrations don't try to recreate them."""
+    from account_manager.migrate import apply_migrations, current_revision
+
+    db.init_engine(Settings(database_url=any_database_url))
+    command.upgrade(_alembic_config(), "0001_initial_ledger")
+    with sa.create_engine(any_database_url).begin() as conn:
+        conn.execute(sa.text("DROP TABLE alembic_version"))
+
+    apply_migrations()  # must not fail with "table already exists"
+
+    assert current_revision() == "0003_authentication"
+    with db.session_scope() as session:
+        assert services.create_company(session, "Acme", "Ahmed").id is not None
+
+
+def test_the_migrations_ship_inside_the_package(any_database_url):
+    """They must be importable from an installed wheel, since a pip user has
+    no source checkout and no alembic.ini to run the alembic command with."""
+    from account_manager import migrate
+
+    assert migrate.MIGRATIONS_DIR.is_dir()
+    assert (migrate.MIGRATIONS_DIR / "env.py").is_file()
+    assert list((migrate.MIGRATIONS_DIR / "versions").glob("*.py"))
+    assert migrate.MIGRATIONS_DIR.parent.name == "account_manager"

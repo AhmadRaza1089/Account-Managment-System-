@@ -75,11 +75,12 @@ Copy `.env.example` to `.env` and edit it, or export the variable directly.
 Then create the schema:
 
 ```bash
-alembic upgrade head
+account-manager init-db
 ```
 
-Run that after every upgrade too — it's how schema changes reach an
-existing install without losing data.
+**Run that after every upgrade too** — it applies any outstanding
+migrations, which is how schema changes reach an existing install without
+losing data. It is safe to run on a database that is already up to date.
 
 ## Backing up
 
@@ -98,7 +99,7 @@ pg_dump account > "backup-$(date +%F).sql"
 ```
 
 Restoring is the reverse: point `DATABASE_URL` at a fresh database, load the
-dump, and run `alembic upgrade head`. Test a restore once — an untested
+dump, and run `account-manager init-db`. Test a restore once — an untested
 backup isn't a backup.
 
 ## Commands

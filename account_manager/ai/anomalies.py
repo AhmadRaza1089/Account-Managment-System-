@@ -17,7 +17,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from ..models import Transaction, TransactionStatus, TransactionType
+from ..models import Transaction, TransactionStatus, TransactionType, utcnow
 from ..services import list_transactions
 
 # How far apart two identical charges can be and still look like a double entry.
@@ -151,11 +151,15 @@ def find_outliers(transactions: Sequence[Transaction]) -> list[Finding]:
 
 
 def find_stale_approvals(transactions: Sequence[Transaction], *, days: int = 14) -> list[Finding]:
-    """Requests nobody has decided on."""
+    """Requests nobody has decided on.
+
+    Measured against the clock, not against the newest ledger entry: a
+    company whose most recent activity *is* the forgotten request would
+    otherwise never see it flagged, which is exactly the case that matters.
+    """
     if not transactions:
         return []
-    newest = max(t.created_at for t in transactions)
-    cutoff = newest - timedelta(days=days)
+    cutoff = utcnow() - timedelta(days=days)
 
     stale = [
         t

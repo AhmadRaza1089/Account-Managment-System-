@@ -2,8 +2,8 @@
 
 Notable changes, newest first. Versions follow [semantic versioning](https://semver.org).
 
-**Upgrading always means running `alembic upgrade head`** after installing
-the new version. Back up your database first (see the README).
+**Upgrading always means running `account-manager init-db`** after
+installing the new version. Back up your database first (see the README).
 
 ## [Unreleased]
 
@@ -20,6 +20,7 @@ the new version. Back up your database first (see the README).
 
   **After upgrading**, an existing install has no accounts yet:
 
+      account-manager init-db
       account-manager user create --username you --superuser
       account-manager login --username you
 
@@ -53,6 +54,23 @@ the new version. Back up your database first (see the README).
 
 ### Fixed
 
+- `account-manager init-db` created the tables directly from the models
+  without recording a migration version, so the documented upgrade step
+  then tried to create those same tables again and failed. It now applies
+  the migrations, and recovers a database left without a version record by
+  the old behaviour. The migrations also ship inside the package, so this
+  works for someone who installed with pip and has no source checkout —
+  previously they had no way to create the schema at all.
+- The MCP server created missing tables on startup, which on an
+  un-migrated install meant quietly serving an empty ledger alongside the
+  real data. It now refuses to start and says to run `init-db`.
+- A pending request was only counted as stale relative to the newest entry
+  in the ledger, so a forgotten request that was itself the newest entry
+  was never flagged — precisely the case the check exists for.
+- The AI summary counted pending, rejected and reversed requests as money
+  actually spent, so it could state spending that never happened as fact.
+- `pending_count` came from a list capped at 50, so any backlog of 50 or
+  more was reported as exactly 50.
 - Two admins approving the same expense at the same moment could both apply
   it, spending the money twice. The status check and the status change now
   happen under one lock, with a locking re-read so the second approver sees

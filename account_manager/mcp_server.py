@@ -267,10 +267,17 @@ def check_for_anomalies(company_id: int) -> list[dict]:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    from .db import create_all, init_engine
+    from .db import init_engine
+    from .migrate import schema_is_ready
 
     init_engine()
-    create_all()
+    if not schema_is_ready():
+        # Creating the tables here would quietly serve an empty ledger to an
+        # install whose data simply hasn't been migrated yet.
+        raise SystemExit(
+            "The database has no schema yet. Run 'account-manager init-db' "
+            "against the same DATABASE_URL first."
+        )
     mcp.run(transport="stdio")
 
 

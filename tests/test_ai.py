@@ -258,3 +258,51 @@ def test_ollama_needs_no_package():
     )
     assert provider.name == "ollama"
     assert provider.model == "llama3.1"
+
+
+# ------------------------------------------- regressions from PR review
+
+
+def test_a_forgotten_request_is_flagged_even_with_no_later_activity():
+    """Regression: staleness was measured against the newest ledger entry,
+    so if the forgotten request WAS the newest entry it never went stale —
+    exactly the case the check exists for."""
+    old_request = Transaction(
+        id=1,
+        company_id=1,
+        type=TransactionType.EXPENSE,
+        status=services.TransactionStatus.PENDING,
+        amount=Decimal("500"),
+        created_by="Raza",
+        created_at=utcnow() - timedelta(days=45),
+    )
+    findings = find_stale_approvals([old_request])
+    assert len(findings) == 1
+    assert findings[0].kind == "stale_approval"
+
+
+def test_a_recent_request_is_not_stale():
+    recent = expense("100", id=1, age_days=1)
+    recent.status = services.TransactionStatus.PENDING
+    assert find_stale_approvals([recent]) == []
+
+
+def test_summary_context_counts_only_approved_spending(session):
+    """Regression: pending and rejected requests were presented to the model
+    as money actually spent, which would make the summary state it as fact."""
+    from account_manager.ai.insights import build_context
+
+    company = services.create_company(session, "Acme", "Ahmed")
+    admin = Actor("Ahmed", Role.ADMIN)
+    staff = Actor("Raza", Role.REGULAR_USER)
+    services.add_income(session, company.id, admin, "5000")
+    services.submit_expense(session, company.id, admin, "100", category="meals")
+    services.submit_expense(session, company.id, staff, "900", category="meals")
+    rejected = services.submit_expense(session, company.id, staff, "700", category="travel")
+    services.reject_expense(session, rejected.id, admin)
+
+    context = build_context(session, company.id)
+
+    assert "meals: 100.00" in context
+    assert "900" not in context.split("Spend by category")[1].split("Recent")[0]
+    assert "travel" not in context.split("Spend by category")[1].split("Recent")[0]

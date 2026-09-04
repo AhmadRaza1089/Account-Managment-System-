@@ -4,7 +4,7 @@
 set -e
 
 if [ "${SKIP_MIGRATIONS:-}" != "1" ]; then
-    alembic upgrade head
+    account-manager init-db >/dev/null
 fi
 
 exec "$@"

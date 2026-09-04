@@ -255,3 +255,15 @@ def test_csv_export_of_an_empty_ledger_still_has_headers(session, company):
     rows = services.export_csv(session, company.id).splitlines()
     assert rows[0].startswith("id,occurred_on,type,status,amount,currency")
     assert len(rows) == 1
+
+
+def test_pending_count_is_not_capped_by_the_display_limit(session, company, admin, staff):
+    """Regression: pending_count came from a list capped at 50, so any
+    backlog of 50 or more was reported as exactly 50."""
+    services.add_income(session, company.id, admin, "100000")
+    for _ in range(55):
+        services.submit_expense(session, company.id, staff, "10")
+
+    report = services.get_report(session, company.id)
+    assert report["pending_count"] == 55
+    assert len(report["pending_transactions"]) == 50  # display limit kept
