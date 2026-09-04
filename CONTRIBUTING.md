@@ -42,13 +42,17 @@ model.
 their database by hand — `alembic revision` and make sure `alembic upgrade
 head` works on an install that already has data.
 
+**Never build an `Actor` outside `auth.py`.** It carries the authority a
+request runs with; the whole point of the auth layer is that it is the only
+thing that decides what someone may do. A front end that constructs its own
+Actor has silently reintroduced the bug where callers could claim to be
+admins.
+
 **If you fix a bug, add a test that fails without the fix.** Several tests
 in `tests/test_services.py` are named after the specific problem they
 prevent coming back; that's the pattern to follow.
 
 ## Areas that need help
 
-- Authentication and per-user accounts — the biggest gap, and the reason
-  this isn't safe to expose to a network.
-- A web interface.
-- Receipt scanning, recurring transactions, exports for accountants.
+- A web interface (authentication now exists to build one on).
+- Receipt attachments and recurring transactions.

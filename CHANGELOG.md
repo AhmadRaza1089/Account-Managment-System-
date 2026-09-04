@@ -7,8 +7,35 @@ the new version. Back up your database first (see the README).
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- **Everyone logs in now.** `--by` and `--role` are gone from the CLI, and
+  `actor_name`/`role` are gone from the MCP tools. Who you are, and what you
+  may do, come from your account instead of from something you type — so
+  the approval workflow is finally enforced rather than merely described.
+  An AI agent given a `regular_user` credential can request spending but
+  cannot approve it.
+- The MCP server requires `ACCOUNT_MANAGER_TOKEN`. Create one with
+  `account-manager token create --name mcp`.
+
+  **After upgrading**, an existing install has no accounts yet:
+
+      account-manager user create --username you --superuser
+      account-manager login --username you
+
+  All existing companies and transactions are untouched, and a superuser
+  reaches every company, so a single-company install needs nothing further.
+
 ### Added
 
+- Accounts with scrypt-hashed passwords, and login tokens stored only as
+  hashes. Changing a password or disabling an account immediately
+  invalidates every existing login.
+- **Per-company membership**, so one install can hold several companies
+  without everyone seeing all of them. A company you are not a member of
+  reports as "not found" rather than "forbidden", so the install does not
+  leak that other companies exist.
+- `user`, `login`, `logout`, `whoami`, `token` and `member` commands.
 - Transactions record **when the money actually moved**, separately from
   when they were entered, so a receipt from last week can be filed today and
   still land in the right month. Existing rows are backfilled from their
@@ -35,7 +62,7 @@ the new version. Back up your database first (see the README).
   full balance. MySQL connections are now pinned to READ COMMITTED, matching
   PostgreSQL and SQLite.
 
-### Added
+### Testing and release
 
 - The test suite runs against real PostgreSQL and MySQL servers in CI, not
   only SQLite. Row locking is a no-op on SQLite, so the protection against

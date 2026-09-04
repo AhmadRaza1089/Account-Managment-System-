@@ -4,10 +4,13 @@
 Run with:
     python -m account_manager.mcp_server
 
-SECURITY: there is no authentication. Callers state their own name and
-role, so roles describe intent, not identity — anyone who can reach this
-server can act as an admin. Run it locally against your own database, and
-don't expose it to a network you don't control.
+Authentication is required. Create a credential with
+
+    account-manager token create --name mcp
+
+and give it to the server as ACCOUNT_MANAGER_TOKEN. Everything the server
+does happens as that user, with exactly the companies and permissions that
+account has — an agent cannot grant itself admin by asking.
 """
 
 import logging
@@ -15,9 +18,9 @@ from datetime import date
 
 from mcp.server.fastmcp import FastMCP
 
-from . import services
+from . import auth, services
 from .db import session_scope
-from .models import Actor, Role, TransactionStatus
+from .models import TransactionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +36,14 @@ def _parse_date(value: str | None) -> date | None:
         raise ValueError(f"{value!r} is not a date in YYYY-MM-DD form.") from None
 
 
-def _actor(name: str, role: str) -> Actor:
-    try:
-        return Actor(name=name, role=Role(role))
-    except ValueError:
-        valid = ", ".join(r.value for r in Role)
-        raise ValueError(f"Unknown role '{role}'. Valid roles: {valid}.") from None
+def _actor(session, company_id: int):
+    """The authority the configured credential has in this company."""
+    return auth.actor_for(session, auth.current_user(session), company_id)
+
+
+def _actor_for_transaction(session, transaction_id: int):
+    company_id = services.company_id_for_transaction(session, transaction_id)
+    return company_id, _actor(session, company_id)
 
 
 @mcp.tool()
@@ -48,7 +53,13 @@ def create_company(name: str, owner_name: str, currency: str = "USD") -> dict:
     currency is a three-letter code such as USD or PKR, used for display.
     """
     with session_scope() as session:
-        company = services.create_company(session, name, owner_name, currency=currency)
+        company = services.create_company(
+            session,
+            name,
+            owner_name,
+            currency=currency,
+            creator=auth.current_user(session),
+        )
         return {
             "company_id": company.id,
             "name": company.name,
@@ -59,11 +70,16 @@ def create_company(name: str, owner_name: str, currency: str = "USD") -> dict:
 
 @mcp.tool()
 def list_companies() -> list[dict]:
-    """List every company in this system."""
+    """List the companies this credential can reach."""
     with session_scope() as session:
         return [
-            {"company_id": c.id, "name": c.name, "owner_name": c.owner_name}
-            for c in services.list_companies(session)
+            {
+                "company_id": c.id,
+                "name": c.name,
+                "owner_name": c.owner_name,
+                "currency": c.currency,
+            }
+            for c in auth.visible_companies(session, auth.current_user(session))
         ]
 
 
@@ -80,6 +96,7 @@ def get_report(
     those dates, while the balance still reflects everything.
     """
     with session_scope() as session:
+        _actor(session, company_id)  # membership check
         return services.get_report(
             session, company_id, since=_parse_date(since), until=_parse_date(until)
         )
@@ -88,21 +105,20 @@ def get_report(
 @mcp.tool()
 def add_income(
     company_id: int,
-    actor_name: str,
     amount: str,
-    role: str = Role.ADMIN.value,
     description: str | None = None,
     category: str | None = None,
 ) -> dict:
     """Record income for a company. Only admins may record income.
 
-    amount is a decimal string such as "1500.00".
+    amount is a decimal string such as "1500.00". Who this is recorded as
+    comes from the configured credential.
     """
     with session_scope() as session:
         txn = services.add_income(
             session,
             company_id,
-            _actor(actor_name, role),
+            _actor(session, company_id),
             amount,
             description=description,
             category=category,
@@ -114,17 +130,15 @@ def add_income(
 @mcp.tool()
 def submit_expense(
     company_id: int,
-    actor_name: str,
-    role: str,
     amount: str,
     description: str | None = None,
     category: str | None = None,
 ) -> dict:
     """Spend money, or request to spend it.
 
-    role is "admin", "owner", or "regular_user". An admin's expense is
-    approved immediately; a regular_user's waits for approval. Either way
-    it is refused if it exceeds the available balance.
+    If the credential is an admin of this company the expense applies
+    immediately; otherwise it waits for approval. Either way it is refused
+    if it exceeds the available balance.
 
     amount is a decimal string such as "250.00".
     """
@@ -132,7 +146,7 @@ def submit_expense(
         txn = services.submit_expense(
             session,
             company_id,
-            _actor(actor_name, role),
+            _actor(session, company_id),
             amount,
             description=description,
             category=category,
@@ -142,33 +156,21 @@ def submit_expense(
 
 
 @mcp.tool()
-def approve_expense(
-    transaction_id: int,
-    actor_name: str,
-    role: str = Role.ADMIN.value,
-    note: str | None = None,
-) -> dict:
+def approve_expense(transaction_id: int, note: str | None = None) -> dict:
     """Approve an expense that is awaiting approval. Admins only."""
     with session_scope() as session:
-        txn = services.approve_expense(
-            session, transaction_id, _actor(actor_name, role), note=note
-        )
+        _, actor = _actor_for_transaction(session, transaction_id)
+        txn = services.approve_expense(session, transaction_id, actor, note=note)
         balances = services.get_balances(session, txn.company_id)
         return {"transaction": txn.as_dict(), **balances.as_dict()}
 
 
 @mcp.tool()
-def reject_expense(
-    transaction_id: int,
-    actor_name: str,
-    role: str = Role.ADMIN.value,
-    note: str | None = None,
-) -> dict:
+def reject_expense(transaction_id: int, note: str | None = None) -> dict:
     """Reject an expense awaiting approval, releasing the funds it held. Admins only."""
     with session_scope() as session:
-        txn = services.reject_expense(
-            session, transaction_id, _actor(actor_name, role), note=note
-        )
+        _, actor = _actor_for_transaction(session, transaction_id)
+        txn = services.reject_expense(session, transaction_id, actor, note=note)
         balances = services.get_balances(session, txn.company_id)
         return {"transaction": txn.as_dict(), **balances.as_dict()}
 
@@ -199,6 +201,7 @@ def list_transactions(
             ) from None
 
     with session_scope() as session:
+        _actor(session, company_id)  # membership check
         return [
             t.as_dict()
             for t in services.list_transactions(
@@ -214,12 +217,7 @@ def list_transactions(
 
 
 @mcp.tool()
-def reverse_transaction(
-    transaction_id: int,
-    actor_name: str,
-    reason: str,
-    role: str = Role.ADMIN.value,
-) -> dict:
+def reverse_transaction(transaction_id: int, reason: str) -> dict:
     """Undo an approved transaction that was entered wrongly. Admins only.
 
     The original is kept and marked reversed rather than deleted, so the
@@ -228,8 +226,9 @@ def reverse_transaction(
     negative, which blocks further spending until it is corrected.
     """
     with session_scope() as session:
+        _, actor = _actor_for_transaction(session, transaction_id)
         txn = services.reverse_transaction(
-            session, transaction_id, _actor(actor_name, role), reason=reason
+            session, transaction_id, actor, reason=reason
         )
         balances = services.get_balances(session, txn.company_id)
         return {"transaction": txn.as_dict(), **balances.as_dict()}
@@ -244,6 +243,7 @@ def export_ledger_csv(
     since and until are YYYY-MM-DD dates filtering on when the money moved.
     """
     with session_scope() as session:
+        _actor(session, company_id)  # membership check
         return services.export_csv(
             session, company_id, since=_parse_date(since), until=_parse_date(until)
         )
@@ -261,6 +261,7 @@ def check_for_anomalies(company_id: int) -> list[dict]:
     from .ai.anomalies import detect_anomalies
 
     with session_scope() as session:
+        _actor(session, company_id)  # membership check
         return [finding.as_dict() for finding in detect_anomalies(session, company_id)]
 
 

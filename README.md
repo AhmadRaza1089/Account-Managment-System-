@@ -8,12 +8,12 @@ by anyone else, and the AI features are optional (one of them runs with no
 API key at all).
 
 ```
-$ account-manager expense submit --company 1 --amount 250 --by Raza --role regular_user
-#4     2026-09-04 expense        250.00 pending   by Raza
+$ account-manager expense submit --company 1 --amount 250 --description "Office chairs"
+#4     2026-09-04 expense        250.00 pending   by raza
 Balance: 1000.00  Available: 750.00
 
-$ account-manager expense approve --id 4 --by Ahmed
-#4     2026-09-04 expense        250.00 approved  by Raza
+$ account-manager expense approve --id 4          # as an admin
+#4     2026-09-04 expense        250.00 approved  by raza
 ```
 
 ## Try it in 30 seconds
@@ -24,16 +24,22 @@ No database to install — it uses a local SQLite file by default.
 pip install git+https://github.com/chahmadraza89/Account-Managment-System-
 
 account-manager init-db
+account-manager user create --username you --superuser
+account-manager login --username you
+
 account-manager company create --name "Acme" --owner "Ahmed"
-account-manager income add --company 1 --amount 10000 --by Ahmed
-account-manager expense submit --company 1 --amount 250 --by Raza --role regular_user
+account-manager income add --company 1 --amount 10000
+account-manager expense submit --company 1 --amount 250
 account-manager report --company 1
 ```
 
 Or with Docker:
 
 ```bash
-docker compose run --rm app account-manager company create --name Acme --owner Ahmed
+docker compose run --rm -e ACCOUNT_MANAGER_PASSWORD=choose-a-password \
+    app account-manager user create --username you --superuser
+docker compose run --rm -e ACCOUNT_MANAGER_PASSWORD=choose-a-password \
+    app account-manager login --username you
 ```
 
 ## What it does
@@ -99,7 +105,11 @@ backup isn't a backup.
 
 ```
 account-manager init-db                    Create the tables
+account-manager user create|list|passwd    Manage accounts
+account-manager login | logout | whoami    Sign in and out
+account-manager token create               A credential for the MCP server
 account-manager company create|list        Manage companies
+account-manager member add|remove|list     Who can use a company
 account-manager income add                 Record income (admins only)
 account-manager expense submit             Spend, or request to spend
 account-manager expense approve|reject     Decide a pending request
@@ -115,11 +125,11 @@ Run any of them with `--help` for the full options.
 ```bash
 # Enter a receipt from last week, in your own currency
 account-manager company create --name "Acme" --owner Ahmed --currency PKR
-account-manager expense submit --company 1 --amount 1200 --by Ahmed --role admin \
+account-manager expense submit --company 1 --amount 1200 \
     --date 2026-01-22 --category office --description "Desks"
 
 # Wrong amount? Correct it — the original stays on the record
-account-manager expense reverse --id 2 --by Ahmed --reason "typo, should be 120"
+account-manager expense reverse --id 2 --reason "typo, should be 120"
 
 # How did January go, and give me the CSV
 account-manager report --company 1 --since 2026-01-01 --until 2026-01-31
@@ -133,7 +143,13 @@ Desktop, Claude Code, or any MCP client can manage the books directly:
 *"what's Acme's balance?"*, *"approve Raza's expense"*, *"anything
 suspicious this month?"*
 
-Add it to your client's config (`claude_desktop_config.json`, or
+First create a credential for it:
+
+```bash
+account-manager token create --name mcp
+```
+
+Then add it to your client's config (`claude_desktop_config.json`, or
 `.mcp.json` for Claude Code):
 
 ```json
@@ -142,11 +158,18 @@ Add it to your client's config (`claude_desktop_config.json`, or
     "account-manager": {
       "command": "python",
       "args": ["-m", "account_manager.mcp_server"],
-      "env": { "DATABASE_URL": "sqlite:////absolute/path/to/account_manager.db" }
+      "env": {
+        "DATABASE_URL": "sqlite:////absolute/path/to/account_manager.db",
+        "ACCOUNT_MANAGER_TOKEN": "the-token-you-just-created"
+      }
     }
   }
 }
 ```
+
+The server acts as whichever account that token belongs to, with exactly
+that account's companies and permissions. Give an assistant a
+`regular_user` account and it can request spending but not approve it.
 
 It exposes: `create_company`, `list_companies`, `get_report`, `add_income`,
 `submit_expense`, `approve_expense`, `reject_expense`, `reverse_transaction`,
@@ -169,7 +192,7 @@ $ account-manager ai check --company 1
 The other two need a provider:
 
 ```
-$ account-manager ai log "paid 45.50 for an uber to the airport" --company 1 --by Raza
+$ account-manager ai log "paid 45.50 for an uber to the airport" --company 1
 Understood: expense 45.50 [travel] Uber to the airport
 
 $ account-manager ai summary --company 1
@@ -186,24 +209,46 @@ Pick whichever provider suits you — set `AI_PROVIDER` and see `.env.example`:
 Amounts extracted by a model go through exactly the same validation as
 typed input, so a wrong number gets rejected rather than trusted.
 
-## Security — please read before exposing this
+## Accounts and permissions
 
-**There is no authentication.** Roles (`admin`, `owner`, `regular_user`)
-are a workflow convention, not a security boundary: whoever runs the CLI
-or reaches the MCP server states their own name and role, so anyone with
-access can act as an admin.
+Everyone logs in, and your role comes from your account — not from a flag
+you type — so nobody can grant themselves admin rights.
 
-That's fine for the intended use — one company, running it on their own
-machine or private server. It is **not** safe to expose to the internet or
-to untrusted users. Real authentication is the main thing still missing;
-see below.
+```bash
+account-manager user create --username ahmed --superuser   # the first account
+account-manager login --username ahmed
+
+account-manager user create --username raza
+account-manager member add --company 1 --username raza --role regular_user
+```
+
+| Role | Can do |
+|---|---|
+| `admin` / `owner` | Record income, approve and reject requests, reverse mistakes, manage members |
+| `regular_user` | Request spending, which then waits for an admin |
+| superuser | All of the above, in every company; manages accounts |
+
+Access is **per company**, so one install can hold several companies
+without everyone seeing all of them. A company you're not a member of
+reports as "not found" rather than "forbidden", so the install doesn't leak
+that other companies exist.
+
+Passwords are hashed with scrypt and never stored in readable form. Logging
+in saves a token to `~/.config/account-manager/credentials.json`, readable
+only by you; changing a password or disabling an account immediately
+invalidates every existing login.
+
+### Still worth knowing
+
+There is no transport security, because there is no network service — this
+is a CLI and a local MCP server, both talking straight to your database. If
+you ever put a web front end on it, that is where TLS and rate limiting
+would need to go.
 
 ## Not done yet
 
-- Authentication and per-user accounts (see above).
-- Multi-company access control — any user of an install can see every
-  company in it.
 - A web interface. This is a CLI and an MCP server today.
+- Password reset by email, and two-factor authentication.
 - Receipt attachments, recurring transactions, and multi-currency
   conversion (each company has one currency; there are no exchange rates).
 

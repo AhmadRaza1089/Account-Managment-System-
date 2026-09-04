@@ -13,7 +13,17 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Numeric, String, Text
+import sqlalchemy as sa
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 DEFAULT_CURRENCY = "USD"
@@ -56,16 +66,19 @@ class Base(DeclarativeBase):
 
 
 class Role(str, enum.Enum):
-    """Who is performing an action.
+    """What a user may do within one company.
 
-    NOTE: this is a workflow convention, not a security boundary. Callers
-    state their own role, so it describes intent rather than enforcing
-    identity. See the security section of the README.
+    Held on their CompanyMember row and read from there, so a caller cannot
+    claim a role they have not been granted.
     """
 
+    #: May record income, approve and reject requests, and reverse mistakes.
     ADMIN = "admin"
-    REGULAR_USER = "regular_user"
+    #: The same authority as admin; a separate name for the person who owns
+    #: the business rather than administers the books.
     OWNER = "owner"
+    #: May request spending, which then waits for an admin.
+    REGULAR_USER = "regular_user"
 
 
 class TransactionType(str, enum.Enum):
@@ -89,14 +102,98 @@ COUNTED_STATUSES = (TransactionStatus.APPROVED, TransactionStatus.PENDING)
 
 @dataclass(frozen=True)
 class Actor:
-    """The person performing an action. Not persisted — see Role."""
+    """Who is performing an action, and with what authority.
+
+    Built by the auth layer from an authenticated user and their membership
+    of the company being acted on — never from something the caller typed.
+    """
 
     name: str
     role: Role = Role.REGULAR_USER
+    user_id: int | None = None
 
     @property
     def is_admin(self) -> bool:
         return self.role in (Role.ADMIN, Role.OWNER)
+
+
+class User(Base):
+    """Someone who can log in."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Can manage users and reaches every company as an admin. The person
+    #: who set the install up.
+    is_superuser: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=sa.false(), nullable=False
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=sa.true(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+
+    memberships: Mapped[list[CompanyMember]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+    tokens: Mapped[list[ApiToken]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<User id={self.id} username={self.username!r}>"
+
+
+class CompanyMember(Base):
+    """Which companies a user can see, and what they may do in each.
+
+    Access is per company rather than per install, so one deployment can
+    hold several companies without everyone seeing all of them.
+    """
+
+    __tablename__ = "company_members"
+
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[Role] = mapped_column(_enum_column(Role), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+
+    user: Mapped[User] = relationship(back_populates="memberships")
+    company: Mapped[Company] = relationship(back_populates="members")
+
+
+class ApiToken(Base):
+    """A logged-in session for the CLI, or a credential for the MCP server.
+
+    Only the hash is stored, so a stolen database yields no usable tokens.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="cli")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="tokens")
 
 
 class Company(Base):
@@ -115,6 +212,11 @@ class Company(Base):
     )
 
     transactions: Mapped[list[Transaction]] = relationship(
+        back_populates="company",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    members: Mapped[list[CompanyMember]] = relationship(
         back_populates="company",
         cascade="all, delete-orphan",
         passive_deletes=True,

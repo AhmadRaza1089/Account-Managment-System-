@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from account_manager import db
+from account_manager import auth, db
 from account_manager.config import Settings
 from account_manager.models import Actor, Role
 
@@ -21,7 +21,14 @@ requires_real_database = pytest.mark.skipif(
 
 @pytest.fixture
 def database(tmp_path, monkeypatch):
-    """A clean database for one test."""
+    """A clean database for one test.
+
+    Also points the credentials file at a temporary directory, so a test
+    can never read or overwrite the real one in the developer's home.
+    """
+    monkeypatch.setenv("ACCOUNT_MANAGER_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.delenv(auth.TOKEN_ENV_VAR, raising=False)
+
     if TEST_DATABASE_URL:
         url = TEST_DATABASE_URL
         monkeypatch.setenv("DATABASE_URL", url)
@@ -42,7 +49,46 @@ def session(database):
 
 
 @pytest.fixture
+def superuser(database):
+    """A logged-in superuser, with credentials saved as the CLI would."""
+    with db.session_scope() as setup:
+        user = auth.create_user(setup, "ahmed", "correct-horse", is_superuser=True)
+        token = auth.issue_token(setup, user, name="test")
+        username = user.username
+    auth.save_credentials(username, token)
+    return {"username": username, "token": token}
+
+
+@pytest.fixture
+def staff_user(database):
+    """A second, ordinary account — no companies until granted."""
+    with db.session_scope() as setup:
+        user = auth.create_user(setup, "raza", "correct-horse")
+        token = auth.issue_token(setup, user, name="test")
+        username = user.username
+    return {"username": username, "token": token}
+
+
+@pytest.fixture
+def login_as(monkeypatch):
+    """Switch which account subsequent commands run as."""
+
+    def _login(credential):
+        monkeypatch.setenv(auth.TOKEN_ENV_VAR, credential["token"])
+
+    return _login
+
+
+@pytest.fixture
+def mcp_credential(superuser, monkeypatch):
+    """Authenticate the MCP server as the superuser."""
+    monkeypatch.setenv(auth.TOKEN_ENV_VAR, superuser["token"])
+    return superuser
+
+
+@pytest.fixture
 def admin():
+    """An Actor for testing the service layer directly."""
     return Actor(name="Ahmed", role=Role.ADMIN)
 
 

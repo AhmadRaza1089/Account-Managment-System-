@@ -29,9 +29,12 @@ from .models import (
     Actor,
     Balances,
     Company,
+    CompanyMember,
+    Role,
     Transaction,
     TransactionStatus,
     TransactionType,
+    User,
     utcnow,
     utctoday,
 )
@@ -69,8 +72,19 @@ def parse_amount(value: str | int | float | Decimal) -> Decimal:
 
 
 def create_company(
-    session: Session, name: str, owner_name: str, *, currency: str = DEFAULT_CURRENCY
+    session: Session,
+    name: str,
+    owner_name: str,
+    *,
+    currency: str = DEFAULT_CURRENCY,
+    creator: User | None = None,
 ) -> Company:
+    """Create a company.
+
+    Whoever creates it becomes an admin of it, so they can immediately see
+    and manage what they just made. Superusers already reach every company,
+    so they need no explicit membership row.
+    """
     name = (name or "").strip()
     owner_name = (owner_name or "").strip()
     if not name:
@@ -87,6 +101,13 @@ def create_company(
     company = Company(name=name, owner_name=owner_name, currency=currency)
     session.add(company)
     session.flush()  # assigns company.id within this transaction
+
+    if creator is not None and not creator.is_superuser:
+        session.add(
+            CompanyMember(company_id=company.id, user_id=creator.id, role=Role.ADMIN)
+        )
+        session.flush()
+
     logger.info("Created company %s (%s)", company.id, company.name)
     return company
 
@@ -257,6 +278,15 @@ def submit_expense(
         status.value,
     )
     return txn
+
+
+def company_id_for_transaction(session: Session, transaction_id: int) -> int:
+    """Which company a transaction belongs to.
+
+    Callers need this before they can work out what authority the user has,
+    since permissions are granted per company.
+    """
+    return _company_id_for(session, transaction_id)
 
 
 def _company_id_for(session: Session, transaction_id: int) -> int:

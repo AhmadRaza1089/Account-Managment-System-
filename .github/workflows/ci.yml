@@ -111,12 +111,15 @@ jobs:
       - name: Exercise the CLI against it
         env:
           DATABASE_URL: sqlite:///ci-check.db
+          ACCOUNT_MANAGER_PASSWORD: ci-test-password
         run: |
+          account-manager user create --username ci --superuser
+          account-manager login --username ci
           account-manager company create --name "CI Co" --owner CI
-          account-manager income add --company 1 --amount 1000 --by CI
-          account-manager expense submit --company 1 --amount 100 --by Staff --role regular_user
-          account-manager expense approve --id 2 --by CI
+          account-manager income add --company 1 --amount 1000
+          account-manager expense submit --company 1 --amount 100
           account-manager report --company 1
+          account-manager export --company 1
           account-manager ai check --company 1
 
   docker:
@@ -128,8 +131,17 @@ jobs:
         run: docker build -t account-manager:ci .
 
       - name: Run the CLI inside it
+        env:
+          ACCOUNT_MANAGER_PASSWORD: ci-test-password
         run: |
-          docker run --rm -v "$PWD/data:/data" account-manager:ci \
-            account-manager company create --name "Docker Co" --owner CI
-          docker run --rm -v "$PWD/data:/data" account-manager:ci \
-            account-manager report --company 1
+          run() {
+            docker run --rm -v "$PWD/data:/data" \
+              -e ACCOUNT_MANAGER_PASSWORD \
+              -e ACCOUNT_MANAGER_CONFIG_DIR=/data/config \
+              account-manager:ci account-manager "$@"
+          }
+          run user create --username ci --superuser
+          run login --username ci
+          run company create --name "Docker Co" --owner CI
+          run income add --company 1 --amount 500
+          run report --company 1
