@@ -1,6 +1,7 @@
 """Persistence layer — translates domain objects to/from the database."""
 
 import logging
+from decimal import Decimal
 
 from . import db
 from .models import Account, Company
@@ -64,4 +65,49 @@ def save_account(account: Account) -> None:
         account.income,
         account.expense,
         account.pending_expense,
+    )
+
+
+def get_company(company_id: int) -> Company | None:
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, name, owner_name FROM Company WHERE id = %s", (company_id,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+    if row is None:
+        return None
+    return Company(id=row[0], name=row[1], owner_name=row[2])
+
+
+def list_companies() -> list[Company]:
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, owner_name FROM Company ORDER BY id")
+        rows = cursor.fetchall()
+        cursor.close()
+    return [Company(id=row[0], name=row[1], owner_name=row[2]) for row in rows]
+
+
+def get_account_by_company(company_id: int) -> Account | None:
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, company_id, income, expense, pending_expense
+            FROM Account WHERE company_id = %s
+            """,
+            (company_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+    if row is None:
+        return None
+    return Account(
+        id=row[0],
+        company_id=row[1],
+        income=Decimal(row[2]),
+        expense=Decimal(row[3]),
+        pending_expense=Decimal(row[4]),
     )
