@@ -1,132 +1,191 @@
-# Account Management System
+# Account Manager
 
-A small company income/expense tracker with a lightweight admin-approval
-workflow, backed by MySQL.
+Self-hosted income, expense and approval tracking for small companies —
+with an MCP server so you can run your books by talking to an AI assistant.
 
-> **Security note:** an earlier version of this repository had a MySQL
-> password hardcoded in source and committed to git history. If that
-> password is still in use anywhere, **rotate it now** — anyone with
-> access to this repo's history has it.
-
-## Project layout
+You bring your own database. Nothing is sent anywhere, nothing is hosted
+by anyone else, and the AI features are optional (one of them runs with no
+API key at all).
 
 ```
-account_manager/
-  config.py      # environment-based settings (DatabaseSettings)
-  db.py          # connection pool + schema creation
-  models.py      # domain logic (Company, Account, User, ExpenseManager) — no DB calls, unit-testable
-  repository.py  # persistence layer, translates domain objects <-> MySQL
-  main.py        # entry point / demo script (guarded by __main__)
-  mcp_server.py  # MCP server — lets AI agents manage accounts directly
-tests/
-  test_models.py     # unit tests for business rules, no live database required
-  test_mcp_server.py # checks the MCP tool registry
+$ account-manager expense submit --company 1 --amount 250 --by Raza --role regular_user
+#4     expense        250.00 pending   by Raza
+Balance: 1000.00  Available: 750.00
+
+$ account-manager expense approve --id 4 --by Ahmed
+#4     expense        250.00 approved  by Raza
 ```
 
-## Setup
+## Try it in 30 seconds
 
-1. Create and activate a virtualenv, then install dependencies:
-   ```
-   python -m venv .venv && source .venv/bin/activate
-   pip install -r requirements-dev.txt
-   ```
-2. Copy `.env.example` to `.env` and fill in your real MySQL credentials.
-   `.env` is gitignored — never commit real credentials.
-3. Run the demo:
-   ```
-   python -m account_manager.main
-   ```
+No database to install — it uses a local SQLite file by default.
 
-## Using it as an MCP server
+```bash
+pip install git+https://github.com/chahmadraza89/Account-Managment-System-
 
-This project can run as a [Model Context Protocol](https://modelcontextprotocol.io)
-server, so you can manage a company's accounts by talking to Claude
-Desktop, Claude Code, or any other MCP-compatible client — instead of
-calling a CLI or writing SQL.
-
-It exposes 5 tools: `create_company`, `list_companies`, `get_report`,
-`add_income`, `submit_expense`. They wrap the same `models`/`repository`
-code the CLI uses, so behavior (role checks, pending-expense rules) is
-identical either way.
-
-1. Install dependencies and set up `.env` as in Setup above.
-2. Add it to your MCP client's config. For Claude Desktop
-   (`claude_desktop_config.json`) or Claude Code (`.mcp.json`):
-   ```json
-   {
-     "mcpServers": {
-       "account-manager": {
-         "command": "python",
-         "args": ["-m", "account_manager.mcp_server"],
-         "cwd": "/absolute/path/to/this/repo",
-         "env": {
-           "DB_HOST": "localhost",
-           "DB_USER": "your_user",
-           "DB_PASSWORD": "your_password",
-           "DB_NAME": "account"
-         }
-       }
-     }
-   }
-   ```
-3. Restart the client. You can then ask it things like "create a company
-   called Acme owned by Ahmed" or "what's Acme's current balance?" and it
-   will call the tools above.
-
-> There's no authentication layer yet — the caller states who they are
-> (name/role) as plain tool arguments, so treat this as a trusted,
-> single-tenant setup for now (see Roadmap).
-
-## Testing
-
-```
-pytest
+account-manager init-db
+account-manager company create --name "Acme" --owner "Ahmed"
+account-manager income add --company 1 --amount 10000 --by Ahmed
+account-manager expense submit --company 1 --amount 250 --by Raza --role regular_user
+account-manager report --company 1
 ```
 
-Model/business-rule tests run against plain Python objects (no database
-required). Lint and type-check with:
+Or with Docker:
 
-```
-ruff check .
-mypy account_manager
+```bash
+docker compose run --rm app account-manager company create --name Acme --owner Ahmed
 ```
 
-All three run in CI on every push (see `.github/workflows/ci.yml`).
+## What it does
 
-## What changed from the original single-file script
+- **Tracks income and expenses** as a ledger of individual transactions,
+  each with a category, description, who entered it, and who approved it.
+- **Approval workflow** — a regular user's expense waits for an admin to
+  approve or reject it; an admin's applies immediately.
+- **Won't let you overspend** — expenses are refused if they exceed the
+  available balance, and requests awaiting approval reserve their funds so
+  the same money can't be committed twice.
+- **Balances are always derived** from the ledger, never stored, so they
+  can't drift out of sync with the transactions behind them.
 
-- Removed the hardcoded DB password; credentials now come from environment
-  variables (`.env`, loaded via `python-dotenv`).
-- Fixed a bug where `Account` rows were never actually inserted into the
-  database — only `Company` was, so every subsequent `UPDATE Account ...`
-  silently matched zero rows. Persisted state and the in-memory objects
-  could diverge.
-- Fixed a bug where a regular user's expense request never updated
-  `pending_expense`, so pending requests were only tracked for
-  not-yet-approved admins, not for regular users.
-- Added `try/except` + rollback around all database writes, and a
-  connection pool instead of a single shared global connection/cursor
-  (the original was not safe under any concurrent use).
-- Split the single file into config / db / models / repository / entry
-  point, so business rules can be unit-tested without a database.
-- Added `.gitignore`, pinned dependency files, CI (lint + type-check +
-  test on every push).
+## Using your own database
 
-## Roadmap (not done yet)
+Set `DATABASE_URL`. That's the only required setting, and it has a working
+default.
 
-This hardens the existing script; it is still a single-tenant demo, not a
-sellable product. To get there:
+| Database | `DATABASE_URL` | Install |
+|---|---|---|
+| SQLite (default) | `sqlite:///account_manager.db` | nothing needed |
+| MySQL / MariaDB | `mysql+mysqlconnector://user:pass@localhost:3306/account` | `pip install "account-manager[mysql]"` |
+| PostgreSQL | `postgresql+psycopg://user:pass@localhost:5432/account` | `pip install "account-manager[postgres]"` |
 
-- Real authentication (hashed passwords, sessions/JWT) — `User` objects
-  are currently just plain data, not tied to a login flow. This also
-  means the MCP server has no per-caller auth yet — see the note above.
-- Expense requests as first-class records (id, requester, approver,
-  timestamps, status) instead of a running `pending_expense` total.
-- Multi-tenancy enforced at the query layer.
-- Audit log of all financial changes.
-- Natural-language expense entry and AI-generated summaries, built on top
-  of the MCP tools above.
-- A web API (e.g. FastAPI) and frontend — this is currently a script/CLI.
-- Deployment (Docker, managed DB, CI/CD to a host), observability
-  (structured logs, error tracking), and a security review before
-  handling real customer data.
+Copy `.env.example` to `.env` and edit it, or export the variable directly.
+Then create the schema:
+
+```bash
+alembic upgrade head
+```
+
+Run that after every upgrade too — it's how schema changes reach an
+existing install without losing data.
+
+## Commands
+
+```
+account-manager init-db                    Create the tables
+account-manager company create|list        Manage companies
+account-manager income add                 Record income (admins only)
+account-manager expense submit             Spend, or request to spend
+account-manager expense approve|reject     Decide a pending request
+account-manager report --company 1         Balances and what's awaiting approval
+account-manager transactions --company 1   The ledger
+account-manager ai log|summary|check       Optional AI features (below)
+```
+
+Run any of them with `--help` for the full options.
+
+## Use it from Claude (MCP)
+
+This runs as an [MCP](https://modelcontextprotocol.io) server, so Claude
+Desktop, Claude Code, or any MCP client can manage the books directly:
+*"what's Acme's balance?"*, *"approve Raza's expense"*, *"anything
+suspicious this month?"*
+
+Add it to your client's config (`claude_desktop_config.json`, or
+`.mcp.json` for Claude Code):
+
+```json
+{
+  "mcpServers": {
+    "account-manager": {
+      "command": "python",
+      "args": ["-m", "account_manager.mcp_server"],
+      "env": { "DATABASE_URL": "sqlite:////absolute/path/to/account_manager.db" }
+    }
+  }
+}
+```
+
+It exposes: `create_company`, `list_companies`, `get_report`, `add_income`,
+`submit_expense`, `approve_expense`, `reject_expense`, `list_transactions`,
+and `check_for_anomalies`.
+
+## AI features (optional)
+
+**`account-manager ai check` needs no AI provider, no API key, and no
+network.** It's statistical, so it also gives the same answer every time —
+which matters when the output is effectively a question about someone's
+expense claim. It flags probable duplicates, amounts far above the usual
+for their category, and requests left waiting too long.
+
+```
+$ account-manager ai check --company 1
+[high  ] Raza logged 40.00 for 'client lunch' twice within 7 days (#7 and #9).
+[medium] #12: 9000.00 for 'meals' is well above the usual 35.00 for that category.
+```
+
+The other two need a provider:
+
+```
+$ account-manager ai log "paid 45.50 for an uber to the airport" --company 1 --by Raza
+Understood: expense 45.50 [travel] Uber to the airport
+
+$ account-manager ai summary --company 1
+```
+
+Pick whichever provider suits you — set `AI_PROVIDER` and see `.env.example`:
+
+| Provider | Cost | Install |
+|---|---|---|
+| `ollama` | free, offline, data never leaves your machine | just [Ollama](https://ollama.com) |
+| `claude` | paid API | `pip install "account-manager[claude]"` |
+| `openai` | paid API | `pip install "account-manager[openai]"` |
+
+Amounts extracted by a model go through exactly the same validation as
+typed input, so a wrong number gets rejected rather than trusted.
+
+## Security — please read before exposing this
+
+**There is no authentication.** Roles (`admin`, `owner`, `regular_user`)
+are a workflow convention, not a security boundary: whoever runs the CLI
+or reaches the MCP server states their own name and role, so anyone with
+access can act as an admin.
+
+That's fine for the intended use — one company, running it on their own
+machine or private server. It is **not** safe to expose to the internet or
+to untrusted users. Real authentication is the main thing still missing;
+see below.
+
+## Not done yet
+
+- Authentication and per-user accounts (see above).
+- Multi-company access control — any user of an install can see every
+  company in it.
+- A web interface. This is a CLI and an MCP server today.
+- Receipt scanning, recurring transactions, exports for accountants.
+
+Contributions welcome — these are good places to start.
+
+## Development
+
+```bash
+git clone https://github.com/chahmadraza89/Account-Managment-System-
+cd Account-Managment-System-
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+pytest                      # tests run against SQLite, no setup needed
+ruff check .                # lint
+mypy account_manager        # types
+```
+
+Layout: `models.py` defines the tables, `services.py` holds every business
+rule (and is the only place they live), `db.py` manages sessions and
+transactions, and `cli.py` and `mcp_server.py` are two thin front ends over
+the same services — so the CLI and an AI agent can never disagree about
+what the rules are. `ai/` is optional and imported lazily, so the core
+never depends on it.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,46 @@
+# Two ways to run this:
+#
+#   docker compose run --rm app account-manager company list
+#       SQLite, stored in the ./data volume. Nothing else to set up.
+#
+#   docker compose --profile mysql up -d
+#   docker compose --profile mysql run --rm app-mysql account-manager company list
+#       The same app against a real MySQL server.
+
+services:
+  app:
+    build: .
+    volumes:
+      - ./data:/data
+    environment:
+      DATABASE_URL: sqlite:////data/account_manager.db
+      # AI_PROVIDER: ollama
+      # OLLAMA_HOST: http://host.docker.internal:11434
+
+  app-mysql:
+    build: .
+    profiles: ["mysql"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+mysqlconnector://account:account@db:3306/account
+
+  db:
+    image: mysql:8
+    profiles: ["mysql"]
+    environment:
+      MYSQL_DATABASE: account
+      MYSQL_USER: account
+      MYSQL_PASSWORD: account
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql-data:
