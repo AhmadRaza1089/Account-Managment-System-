@@ -21,6 +21,8 @@ EXPECTED_TOOLS = {
     "reject_expense",
     "list_transactions",
     "check_for_anomalies",
+    "reverse_transaction",
+    "export_ledger_csv",
 }
 
 
@@ -186,3 +188,46 @@ async def test_list_transactions_filters_by_status(database):
     pending = await call("list_transactions", company_id=company_id, status="pending")
     assert len(pending) == 1
     assert pending[0]["amount"] == "60.00"
+
+
+async def test_reversing_through_mcp_restores_the_balance(database):
+    company_id = (await call("create_company", name="Acme", owner_name="Ahmed"))[
+        "company_id"
+    ]
+    await call("add_income", company_id=company_id, actor_name="Ahmed", amount="1000")
+    spent = await call(
+        "submit_expense",
+        company_id=company_id,
+        actor_name="Ahmed",
+        role="admin",
+        amount="400",
+    )
+    assert spent["balance"] == "600.00"
+
+    reversed_txn = await call(
+        "reverse_transaction",
+        transaction_id=spent["transaction"]["id"],
+        actor_name="Ahmed",
+        reason="charged to the wrong company",
+    )
+    assert reversed_txn["transaction"]["status"] == "reversed"
+    assert reversed_txn["balance"] == "1000.00"
+
+
+async def test_csv_export_through_mcp(database):
+    company_id = (await call("create_company", name="Acme", owner_name="Ahmed",
+                             currency="EUR"))["company_id"]
+    await call("add_income", company_id=company_id, actor_name="Ahmed", amount="120")
+
+    data = await call("export_ledger_csv", company_id=company_id)
+    assert "id,occurred_on,type,status,amount,currency" in data
+    assert "120.00" in data
+    assert "EUR" in data
+
+
+async def test_a_bad_date_is_reported_clearly(database):
+    company_id = (await call("create_company", name="Acme", owner_name="Ahmed"))[
+        "company_id"
+    ]
+    with pytest.raises(Exception, match="YYYY-MM-DD"):
+        await call("get_report", company_id=company_id, since="15-01-2026")

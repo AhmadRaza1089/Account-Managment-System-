@@ -7,6 +7,23 @@ the new version. Back up your database first (see the README).
 
 ## [Unreleased]
 
+### Added
+
+- Transactions record **when the money actually moved**, separately from
+  when they were entered, so a receipt from last week can be filed today and
+  still land in the right month. Existing rows are backfilled from their
+  entry date.
+- **Reversal**: an approved entry made by mistake can be undone. The row is
+  kept and marked reversed, with who reversed it and why, so the correction
+  is part of the record rather than a deletion. Reversing income can leave
+  the balance negative — that is the true position, and further spending
+  stays blocked until it recovers.
+- **Per-company currency** (display only; there is no conversion between
+  currencies).
+- **Date-range reporting** and filtering, and **CSV export** for handing the
+  ledger to an accountant.
+- Pagination for companies with long histories.
+
 ### Fixed
 
 - Two admins approving the same expense at the same moment could both apply

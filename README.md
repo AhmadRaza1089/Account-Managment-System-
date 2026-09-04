@@ -9,11 +9,11 @@ API key at all).
 
 ```
 $ account-manager expense submit --company 1 --amount 250 --by Raza --role regular_user
-#4     expense        250.00 pending   by Raza
+#4     2026-09-04 expense        250.00 pending   by Raza
 Balance: 1000.00  Available: 750.00
 
 $ account-manager expense approve --id 4 --by Ahmed
-#4     expense        250.00 approved  by Raza
+#4     2026-09-04 expense        250.00 approved  by Raza
 ```
 
 ## Try it in 30 seconds
@@ -47,6 +47,12 @@ docker compose run --rm app account-manager company create --name Acme --owner A
   the same money can't be committed twice.
 - **Balances are always derived** from the ledger, never stored, so they
   can't drift out of sync with the transactions behind them.
+- **Records when the money moved**, separately from when someone typed it
+  in, so you can enter last week's receipt today and still report on the
+  right month.
+- **Corrects mistakes without erasing them** — reversing an entry keeps it
+  in the ledger marked reversed, with who reversed it and why.
+- **Exports to CSV** for your accountant, and reports on any date range.
 
 ## Using your own database
 
@@ -97,12 +103,28 @@ account-manager company create|list        Manage companies
 account-manager income add                 Record income (admins only)
 account-manager expense submit             Spend, or request to spend
 account-manager expense approve|reject     Decide a pending request
+account-manager expense reverse            Undo an approved entry made by mistake
 account-manager report --company 1         Balances and what's awaiting approval
 account-manager transactions --company 1   The ledger
+account-manager export --company 1         The ledger as CSV
 account-manager ai log|summary|check       Optional AI features (below)
 ```
 
 Run any of them with `--help` for the full options.
+
+```bash
+# Enter a receipt from last week, in your own currency
+account-manager company create --name "Acme" --owner Ahmed --currency PKR
+account-manager expense submit --company 1 --amount 1200 --by Ahmed --role admin \
+    --date 2026-01-22 --category office --description "Desks"
+
+# Wrong amount? Correct it — the original stays on the record
+account-manager expense reverse --id 2 --by Ahmed --reason "typo, should be 120"
+
+# How did January go, and give me the CSV
+account-manager report --company 1 --since 2026-01-01 --until 2026-01-31
+account-manager export --company 1 --output january.csv
+```
 
 ## Use it from Claude (MCP)
 
@@ -127,8 +149,8 @@ Add it to your client's config (`claude_desktop_config.json`, or
 ```
 
 It exposes: `create_company`, `list_companies`, `get_report`, `add_income`,
-`submit_expense`, `approve_expense`, `reject_expense`, `list_transactions`,
-and `check_for_anomalies`.
+`submit_expense`, `approve_expense`, `reject_expense`, `reverse_transaction`,
+`list_transactions`, `export_ledger_csv`, and `check_for_anomalies`.
 
 ## AI features (optional)
 
@@ -182,7 +204,8 @@ see below.
 - Multi-company access control — any user of an install can see every
   company in it.
 - A web interface. This is a CLI and an MCP server today.
-- Receipt scanning, recurring transactions, exports for accountants.
+- Receipt attachments, recurring transactions, and multi-currency
+  conversion (each company has one currency; there are no exchange rates).
 
 Contributions welcome — these are good places to start.
 

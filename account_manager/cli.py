@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import date
 
 from . import __version__, services
 from .ai.base import AIError
@@ -22,9 +23,20 @@ from .errors import AccountManagerError
 from .models import Actor, Role, TransactionStatus
 
 
+def _iso_date(value: str) -> date:
+    """A YYYY-MM-DD argument."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a date in YYYY-MM-DD form."
+        ) from None
+
+
 def _print_transaction(txn_dict: dict) -> None:
     print(
-        f"#{txn_dict['id']:<5} {txn_dict['type']:<8} {txn_dict['amount']:>12} "
+        f"#{txn_dict['id']:<5} {txn_dict.get('occurred_on') or '':<10} "
+        f"{txn_dict['type']:<8} {txn_dict['amount']:>12} "
         f"{txn_dict['status']:<9} by {txn_dict['created_by']}"
         + (f" — {txn_dict['description']}" if txn_dict.get("description") else "")
     )
@@ -39,8 +51,13 @@ def _cmd_init_db(_args: argparse.Namespace) -> int:
 
 def _cmd_company_create(args: argparse.Namespace) -> int:
     with session_scope() as session:
-        company = services.create_company(session, args.name, args.owner)
-        print(f"Created company #{company.id}: {company.name} (owner {company.owner_name})")
+        company = services.create_company(
+            session, args.name, args.owner, currency=args.currency
+        )
+        print(
+            f"Created company #{company.id}: {company.name} "
+            f"(owner {company.owner_name}, {company.currency})"
+        )
     return 0
 
 
@@ -50,7 +67,10 @@ def _cmd_company_list(_args: argparse.Namespace) -> int:
         if not companies:
             print("No companies yet. Create one with: company create --name X --owner Y")
         for company in companies:
-            print(f"#{company.id:<5} {company.name}  (owner {company.owner_name})")
+            print(
+                f"#{company.id:<5} {company.name}  "
+                f"(owner {company.owner_name}, {company.currency})"
+            )
     return 0
 
 
@@ -63,6 +83,7 @@ def _cmd_income_add(args: argparse.Namespace) -> int:
             args.amount,
             description=args.description,
             category=args.category,
+            occurred_on=args.date,
         )
         balances = services.get_balances(session, args.company)
         _print_transaction(txn.as_dict())
@@ -79,6 +100,7 @@ def _cmd_expense_submit(args: argparse.Namespace) -> int:
             args.amount,
             description=args.description,
             category=args.category,
+            occurred_on=args.date,
         )
         balances = services.get_balances(session, args.company)
         _print_transaction(txn.as_dict())
@@ -104,15 +126,60 @@ def _cmd_expense_reject(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_expense_reverse(args: argparse.Namespace) -> int:
+    with session_scope() as session:
+        txn = services.reverse_transaction(
+            session,
+            args.id,
+            Actor(name=args.by, role=Role(args.role)),
+            reason=args.reason,
+        )
+        balances = services.get_balances(session, txn.company_id)
+        _print_transaction(txn.as_dict())
+        print(f"Balance: {balances.balance}  Available: {balances.available}")
+        if balances.balance < 0:
+            print(
+                "Warning: the balance is now negative — money was spent against "
+                "an entry that has since been reversed. Further spending is "
+                "blocked until this is corrected."
+            )
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    with session_scope() as session:
+        data = services.export_csv(
+            session, args.company, since=args.since, until=args.until
+        )
+    if args.output:
+        with open(args.output, "w", newline="", encoding="utf-8") as handle:
+            handle.write(data)
+        print(f"Wrote {args.output}")
+    else:
+        print(data, end="")
+    return 0
+
+
 def _cmd_report(args: argparse.Namespace) -> int:
     with session_scope() as session:
-        report = services.get_report(session, args.company)
-    print(f"{report['company']} (owner {report['owner']})")
+        report = services.get_report(
+            session, args.company, since=args.since, until=args.until
+        )
+    print(f"{report['company']} (owner {report['owner']}, {report['currency']})")
     print(f"  Income:            {report['income']:>14}")
     print(f"  Expenses:          {report['expense']:>14}")
     print(f"  Awaiting approval: {report['pending_expense']:>14}")
     print(f"  Balance:           {report['balance']:>14}")
     print(f"  Available:         {report['available']:>14}")
+
+    if "period" in report:
+        period = report["period"]
+        label = f"{period['since'] or 'start'} to {period['until'] or 'today'}"
+        print(f"\nPeriod {label}:")
+        print(f"  Income:            {period['income']:>14}")
+        print(f"  Expenses:          {period['expense']:>14}")
+        print(f"  Net:               {period['net']:>14}")
+
     if report["pending_transactions"]:
         print("\nAwaiting approval:")
         for txn in report["pending_transactions"]:
@@ -186,7 +253,13 @@ def _cmd_transactions(args: argparse.Namespace) -> int:
     status = TransactionStatus(args.status) if args.status else None
     with session_scope() as session:
         transactions = services.list_transactions(
-            session, args.company, status=status, limit=args.limit
+            session,
+            args.company,
+            status=status,
+            since=args.since,
+            until=args.until,
+            limit=args.limit,
+            offset=args.offset,
         )
         if not transactions:
             print("No transactions found.")
@@ -211,6 +284,9 @@ def build_parser() -> argparse.ArgumentParser:
     create = company_sub.add_parser("create", help="Create a company")
     create.add_argument("--name", required=True)
     create.add_argument("--owner", required=True)
+    create.add_argument(
+        "--currency", default="USD", help="Three-letter code, e.g. USD, EUR, PKR"
+    )
     create.set_defaults(func=_cmd_company_create)
     company_sub.add_parser("list", help="List companies").set_defaults(
         func=_cmd_company_list
@@ -227,6 +303,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     income_add.add_argument("--description")
     income_add.add_argument("--category")
+    income_add.add_argument(
+        "--date", type=_iso_date, help="When the money moved (YYYY-MM-DD, default today)"
+    )
     income_add.set_defaults(func=_cmd_income_add)
 
     expense = sub.add_parser("expense", help="Spend money or manage requests")
@@ -241,6 +320,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     submit.add_argument("--description")
     submit.add_argument("--category")
+    submit.add_argument(
+        "--date", type=_iso_date, help="When the money moved (YYYY-MM-DD, default today)"
+    )
     submit.set_defaults(func=_cmd_expense_submit)
 
     approve = expense_sub.add_parser("approve", help="Approve a pending expense")
@@ -261,9 +343,29 @@ def build_parser() -> argparse.ArgumentParser:
     reject.add_argument("--note")
     reject.set_defaults(func=_cmd_expense_reject)
 
+    reverse = expense_sub.add_parser(
+        "reverse", help="Undo an approved transaction entered by mistake"
+    )
+    reverse.add_argument("--id", type=int, required=True)
+    reverse.add_argument("--by", required=True)
+    reverse.add_argument(
+        "--role", default=Role.ADMIN.value, choices=[r.value for r in Role]
+    )
+    reverse.add_argument("--reason", required=True, help="Kept on the record")
+    reverse.set_defaults(func=_cmd_expense_reverse)
+
     report = sub.add_parser("report", help="Show a company's financial summary")
     report.add_argument("--company", type=int, required=True)
+    report.add_argument("--since", type=_iso_date, help="Period start (YYYY-MM-DD)")
+    report.add_argument("--until", type=_iso_date, help="Period end (YYYY-MM-DD)")
     report.set_defaults(func=_cmd_report)
+
+    export = sub.add_parser("export", help="Export the ledger as CSV")
+    export.add_argument("--company", type=int, required=True)
+    export.add_argument("--since", type=_iso_date)
+    export.add_argument("--until", type=_iso_date)
+    export.add_argument("--output", help="File to write (default: stdout)")
+    export.set_defaults(func=_cmd_export)
 
     ai = sub.add_parser("ai", help="Optional AI-assisted features")
     ai_sub = ai.add_subparsers(dest="ai_command", required=True)
@@ -298,6 +400,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--status", choices=[s.value for s in TransactionStatus], default=None
     )
     transactions.add_argument("--limit", type=int, default=50)
+    transactions.add_argument("--offset", type=int, default=0)
+    transactions.add_argument("--since", type=_iso_date)
+    transactions.add_argument("--until", type=_iso_date)
     transactions.set_defaults(func=_cmd_transactions)
 
     return parser

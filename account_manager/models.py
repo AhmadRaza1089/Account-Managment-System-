@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+DEFAULT_CURRENCY = "USD"
 
 
 def utcnow() -> datetime:
@@ -28,6 +30,11 @@ def utcnow() -> datetime:
     Everything in this project is UTC.
     """
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def utctoday() -> date:
+    """Today's date in UTC."""
+    return datetime.now(timezone.utc).date()
 
 
 def _enum_column(enum_cls: type[enum.Enum]) -> Enum:
@@ -70,6 +77,14 @@ class TransactionStatus(str, enum.Enum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+    #: A previously approved transaction that turned out to be wrong. The row
+    #: is kept exactly as it was and simply stops counting towards balances,
+    #: so the books can be corrected without erasing what was recorded.
+    REVERSED = "reversed"
+
+
+#: Statuses whose money is actually committed.
+COUNTED_STATUSES = (TransactionStatus.APPROVED, TransactionStatus.PENDING)
 
 
 @dataclass(frozen=True)
@@ -90,6 +105,11 @@ class Company(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     owner_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: ISO 4217 code, for display only — this project does not convert
+    #: between currencies, so one company keeps one currency.
+    currency: Mapped[str] = mapped_column(
+        String(3), default=DEFAULT_CURRENCY, server_default=DEFAULT_CURRENCY, nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
@@ -124,6 +144,11 @@ class Transaction(Base):
     category: Mapped[str | None] = mapped_column(String(60), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    #: The date the money actually moved, which is not the date somebody got
+    #: round to typing it in. Reporting uses this; created_at is the audit
+    #: record of when the entry was made.
+    occurred_on: Mapped[date] = mapped_column(Date, default=utctoday, nullable=False, index=True)
+
     created_by: Mapped[str] = mapped_column(String(120), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False, index=True
@@ -132,6 +157,13 @@ class Transaction(Base):
     decided_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: Set when a mistake is corrected. The original row keeps its own
+    #: decided_by/decided_at, so both the approval and the correction stay
+    #: on the record.
+    reversed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reversal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     company: Mapped[Company] = relationship(back_populates="transactions")
 
@@ -150,12 +182,16 @@ class Transaction(Base):
             "amount": str(self.amount),
             "category": self.category,
             "description": self.description,
+            "occurred_on": self.occurred_on.isoformat() if self.occurred_on else None,
             "created_by": self.created_by,
             # Stored naive but always UTC; the Z makes that explicit to callers.
             "created_at": f"{self.created_at.isoformat()}Z" if self.created_at else None,
             "decided_by": self.decided_by,
             "decided_at": f"{self.decided_at.isoformat()}Z" if self.decided_at else None,
             "decision_note": self.decision_note,
+            "reversed_by": self.reversed_by,
+            "reversed_at": f"{self.reversed_at.isoformat()}Z" if self.reversed_at else None,
+            "reversal_reason": self.reversal_reason,
         }
 
 

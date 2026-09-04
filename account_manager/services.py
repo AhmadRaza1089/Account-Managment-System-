@@ -7,8 +7,11 @@ them commit or roll back together.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from collections.abc import Sequence
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import func, select
@@ -22,6 +25,7 @@ from .errors import (
     PermissionDenied,
 )
 from .models import (
+    DEFAULT_CURRENCY,
     Actor,
     Balances,
     Company,
@@ -29,6 +33,7 @@ from .models import (
     TransactionStatus,
     TransactionType,
     utcnow,
+    utctoday,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,7 +68,9 @@ def parse_amount(value: str | int | float | Decimal) -> Decimal:
 # --------------------------------------------------------------------------
 
 
-def create_company(session: Session, name: str, owner_name: str) -> Company:
+def create_company(
+    session: Session, name: str, owner_name: str, *, currency: str = DEFAULT_CURRENCY
+) -> Company:
     name = (name or "").strip()
     owner_name = (owner_name or "").strip()
     if not name:
@@ -71,7 +78,13 @@ def create_company(session: Session, name: str, owner_name: str) -> Company:
     if not owner_name:
         raise InvalidState("Owner name must not be empty.")
 
-    company = Company(name=name, owner_name=owner_name)
+    currency = (currency or DEFAULT_CURRENCY).strip().upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise InvalidState(
+            f"Currency must be a three-letter code such as USD or PKR, not {currency!r}."
+        )
+
+    company = Company(name=name, owner_name=owner_name, currency=currency)
     session.add(company)
     session.flush()  # assigns company.id within this transaction
     logger.info("Created company %s (%s)", company.id, company.name)
@@ -104,9 +117,20 @@ def list_companies(session: Session) -> Sequence[Company]:
 # --------------------------------------------------------------------------
 
 
-def get_balances(session: Session, company_id: int) -> Balances:
-    """Sum the ledger. Never reads a stored total, so it cannot drift."""
-    rows = session.execute(
+def get_balances(
+    session: Session,
+    company_id: int,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+) -> Balances:
+    """Sum the ledger. Never reads a stored total, so it cannot drift.
+
+    With no dates this is the company's current position, which is what the
+    spending checks use. With dates it is a summary of that period — useful
+    for a monthly report, but not a spendable amount.
+    """
+    stmt = (
         select(
             Transaction.type,
             Transaction.status,
@@ -114,7 +138,13 @@ def get_balances(session: Session, company_id: int) -> Balances:
         )
         .where(Transaction.company_id == company_id)
         .group_by(Transaction.type, Transaction.status)
-    ).all()
+    )
+    if since is not None:
+        stmt = stmt.where(Transaction.occurred_on >= since)
+    if until is not None:
+        stmt = stmt.where(Transaction.occurred_on <= until)
+
+    rows = session.execute(stmt).all()
 
     income = expense = pending = Decimal("0")
     for txn_type, status, total in rows:
@@ -142,6 +172,7 @@ def add_income(
     *,
     description: str | None = None,
     category: str | None = None,
+    occurred_on: date | None = None,
 ) -> Transaction:
     """Record income. Admins only."""
     if not actor.is_admin:
@@ -158,6 +189,7 @@ def add_income(
         amount=value,
         category=category,
         description=description,
+        occurred_on=occurred_on or utctoday(),
         created_by=actor.name,
         decided_by=actor.name,
         decided_at=utcnow(),
@@ -181,6 +213,7 @@ def submit_expense(
     *,
     description: str | None = None,
     category: str | None = None,
+    occurred_on: date | None = None,
 ) -> Transaction:
     """Spend, or request to spend.
 
@@ -209,6 +242,7 @@ def submit_expense(
         amount=value,
         category=category,
         description=description,
+        occurred_on=occurred_on or utctoday(),
         created_by=actor.name,
         decided_by=actor.name if actor.is_admin else None,
         decided_at=utcnow() if actor.is_admin else None,
@@ -314,6 +348,55 @@ def reject_expense(
     )
 
 
+def reverse_transaction(
+    session: Session, transaction_id: int, actor: Actor, *, reason: str
+) -> Transaction:
+    """Undo an approved transaction that was entered wrongly. Admins only.
+
+    The row is kept exactly as it was and marked reversed, so it stops
+    counting towards balances without disappearing from the record — an
+    accounting ledger should show that a correction happened, not pretend
+    the original entry never existed.
+
+    Reversing recorded income can leave the balance negative, when the money
+    had already been spent on the strength of an entry that turned out to be
+    wrong. That is allowed: it is the true position, and further spending
+    stays blocked until the balance recovers.
+    """
+    if not actor.is_admin:
+        raise PermissionDenied(
+            f"{actor.name} has role '{actor.role.value}' and cannot reverse transactions."
+        )
+    reason = (reason or "").strip()
+    if not reason:
+        raise InvalidState("A reversal needs a reason — it stays on the record.")
+
+    get_company(session, _company_id_for(session, transaction_id), lock=True)
+
+    txn = session.execute(
+        select(Transaction)
+        .where(Transaction.id == transaction_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if txn is None:
+        raise NotFound(f"No transaction with id {transaction_id}.")
+    if txn.status is not TransactionStatus.APPROVED:
+        raise InvalidState(
+            f"Only approved transactions can be reversed; transaction "
+            f"{transaction_id} is {txn.status.value}. "
+            "Use reject for one that is still awaiting approval."
+        )
+
+    txn.status = TransactionStatus.REVERSED
+    txn.reversed_by = actor.name
+    txn.reversed_at = utcnow()
+    txn.reversal_reason = reason
+    session.flush()
+    logger.info("Transaction %s reversed by %s: %s", transaction_id, actor.name, reason)
+    return txn
+
+
 # --------------------------------------------------------------------------
 # Reading the ledger
 # --------------------------------------------------------------------------
@@ -325,29 +408,124 @@ def list_transactions(
     *,
     status: TransactionStatus | None = None,
     type: TransactionType | None = None,
+    since: date | None = None,
+    until: date | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> Sequence[Transaction]:
+    """Newest first. Dates filter on when the money moved, not when it was
+    typed in."""
     stmt = select(Transaction).where(Transaction.company_id == company_id)
     if status is not None:
         stmt = stmt.where(Transaction.status == status)
     if type is not None:
         stmt = stmt.where(Transaction.type == type)
-    stmt = stmt.order_by(Transaction.created_at.desc(), Transaction.id.desc())
-    stmt = stmt.limit(max(1, min(limit, 1000)))
+    if since is not None:
+        stmt = stmt.where(Transaction.occurred_on >= since)
+    if until is not None:
+        stmt = stmt.where(Transaction.occurred_on <= until)
+
+    stmt = stmt.order_by(
+        Transaction.occurred_on.desc(),
+        Transaction.created_at.desc(),
+        Transaction.id.desc(),
+    )
+    stmt = stmt.limit(max(1, min(limit, 1000))).offset(max(0, offset))
     return session.execute(stmt).scalars().all()
 
 
-def get_report(session: Session, company_id: int) -> dict:
+def count_transactions(
+    session: Session,
+    company_id: int,
+    *,
+    status: TransactionStatus | None = None,
+) -> int:
+    """How many transactions match, so a caller can page through them."""
+    stmt = select(func.count(Transaction.id)).where(
+        Transaction.company_id == company_id
+    )
+    if status is not None:
+        stmt = stmt.where(Transaction.status == status)
+    return int(session.execute(stmt).scalar_one())
+
+
+def get_report(
+    session: Session,
+    company_id: int,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+) -> dict:
+    """A company's position, optionally narrowed to a period.
+
+    When a period is given, the income and expense figures cover that period
+    while the balance still reflects everything — a month's spending is a
+    different question from how much money the company actually has.
+    """
     company = get_company(session, company_id)
-    balances = get_balances(session, company_id)
+    overall = get_balances(session, company_id)
     pending = list_transactions(
         session, company_id, status=TransactionStatus.PENDING, limit=50
     )
-    return {
+
+    report = {
         "company_id": company.id,
         "company": company.name,
         "owner": company.owner_name,
-        **balances.as_dict(),
+        "currency": company.currency,
+        **overall.as_dict(),
         "pending_count": len(pending),
         "pending_transactions": [t.as_dict() for t in pending],
     }
+
+    if since is not None or until is not None:
+        period = get_balances(session, company_id, since=since, until=until)
+        report["period"] = {
+            "since": since.isoformat() if since else None,
+            "until": until.isoformat() if until else None,
+            "income": str(period.income),
+            "expense": str(period.expense),
+            "net": str(period.income - period.expense),
+        }
+    return report
+
+
+CSV_COLUMNS = (
+    "id",
+    "occurred_on",
+    "type",
+    "status",
+    "amount",
+    "currency",
+    "category",
+    "description",
+    "created_by",
+    "created_at",
+    "decided_by",
+    "decided_at",
+    "reversed_by",
+    "reversal_reason",
+)
+
+
+def export_csv(
+    session: Session,
+    company_id: int,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+) -> str:
+    """The ledger as CSV, oldest first — the order an accountant expects."""
+    company = get_company(session, company_id)
+    transactions = list_transactions(
+        session, company_id, since=since, until=until, limit=1000
+    )
+
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for txn in reversed(transactions):
+        row = txn.as_dict()
+        row["currency"] = company.currency
+        writer.writerow({column: row.get(column, "") for column in CSV_COLUMNS})
+    return buffer.getvalue()
