@@ -8,13 +8,20 @@ on:
 
 jobs:
   test:
+    name: test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
@@ -25,5 +32,115 @@ jobs:
       - name: Type check
         run: mypy account_manager
 
-      - name: Run tests
+      - name: Run tests (SQLite)
         run: pytest -v
+
+  # The row locking that stops two people spending the same money is a
+  # no-op on SQLite, so it only gets exercised here.
+  test-databases:
+    name: test (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: postgres
+            url: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/account_test
+            extra: "psycopg[binary]"
+          - database: mysql
+            url: mysql+mysqlconnector://root:mysql@127.0.0.1:3306/account_test
+            extra: mysql-connector-python
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: account_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 20
+
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+          MYSQL_DATABASE: account_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pmysql"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt "${{ matrix.extra }}"
+
+      - name: Run tests against ${{ matrix.database }}
+        env:
+          TEST_DATABASE_URL: ${{ matrix.url }}
+        run: pytest -v
+
+  package:
+    # The project is meant to be installed by strangers, so prove that
+    # installing it and running it works from a clean checkout.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the package
+        run: pip install .
+
+      - name: Set up the database and exercise the CLI
+        # Runs from an empty directory, proving the migrations ship in the
+        # wheel rather than only existing in the source checkout.
+        working-directory: /tmp
+        env:
+          DATABASE_URL: sqlite:////tmp/ci-check.db
+          ACCOUNT_MANAGER_PASSWORD: ci-test-password
+        run: |
+          account-manager init-db
+          account-manager user create --username ci --superuser
+          account-manager login --username ci
+          account-manager company create --name "CI Co" --owner CI
+          account-manager income add --company 1 --amount 1000
+          account-manager expense submit --company 1 --amount 100
+          account-manager report --company 1
+          account-manager export --company 1
+          account-manager ai check --company 1
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t account-manager:ci .
+
+      - name: Run the CLI inside it
+        env:
+          ACCOUNT_MANAGER_PASSWORD: ci-test-password
+        run: |
+          run() {
+            docker run --rm -v "$PWD/data:/data" \
+              -e ACCOUNT_MANAGER_PASSWORD \
+              -e ACCOUNT_MANAGER_CONFIG_DIR=/data/config \
+              account-manager:ci account-manager "$@"
+          }
+          run user create --username ci --superuser
+          run login --username ci
+          run company create --name "Docker Co" --owner CI
+          run income add --company 1 --amount 500
+          run report --company 1

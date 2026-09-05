@@ -1,3 +1,5 @@
-"""Account Management System — company income/expense tracking."""
+"""Account Manager — company income, expense and approval tracking."""
 
-__version__ = "0.1.0"
+# The single source of truth for the version: pyproject.toml reads it from
+# here, so the package metadata and `account-manager --version` can't drift.
+__version__ = "0.2.0"
